@@ -122,8 +122,3 @@ output "preview_url" {
 output "webhook_url" {
   value = "https://${module.domain.fqdn}/webhook"
 }
-
-output "github_webhook_secret" {
-  value     = random_password.webhook_secret.result
-  sensitive = true
-}

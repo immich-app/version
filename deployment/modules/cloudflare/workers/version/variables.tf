@@ -35,3 +35,24 @@ variable "github_app_readonly_installation_id" {
   description = "GitHub App installation ID for the Immich Read-Only app"
   type        = string
 }
+
+variable "github_app_tofu_id" {
+  description = "GitHub App ID for the Immich Tofu app, which manages the release webhook"
+  type        = string
+}
+
+variable "github_app_tofu_installation_id" {
+  description = "GitHub App installation ID for the Immich Tofu app"
+  type        = string
+}
+
+variable "github_app_tofu_pem_file" {
+  description = "GitHub App private key (PEM) for the Immich Tofu app"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_app_tofu_owner" {
+  description = "GitHub organisation the Immich Tofu app acts on"
+  type        = string
+}
