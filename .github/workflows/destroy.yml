@@ -1,0 +1,56 @@
+name: Destroy PR environment
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number whose pr-<N> stage to destroy in dev + prod'
+        required: true
+        type: string
+
+env:
+  TG_NON_INTERACTIVE: 'true'
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ['dev', 'prod']
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      TF_VAR_stage: pr-${{ github.event.inputs.pr_number || github.event.number }}
+      TF_VAR_dist_dir: ${{ github.workspace }}/dist
+      TF_VAR_migrations_dir: ${{ github.workspace }}/migrations
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ matrix.environment == 'prod' && secrets.OP_TF_PROD_ENV || secrets.OP_TF_DEV_ENV }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create dummy dist for terraform evaluation
+        run: |
+          mkdir -p dist/version
+          echo "" > dist/version/index.js
+
+      - name: Install 1Password CLI
+        uses: 1password/install-cli-action@1a3160d5e9de1ae0803eaa08a88746f5ae3daa50 # v4.1.0
+
+      - id: token
+        uses: immich-app/devtools/actions/create-workflow-token@df46d635b905e618b88fc4c95baa920aeb30b309 # create-workflow-token-action-v3.0.1
+        with:
+          client-id: ${{ secrets.PUSH_O_MATIC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PUSH_O_MATIC_APP_KEY }}
+          permission-contents: read
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@06a9ef925332c91be647d6256642b86b398592c8 # use-mise-action-v3.2.1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Destroy All
+        working-directory: ${{ github.workspace }}/deployment
+        run: mise run tf:destroy
