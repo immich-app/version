@@ -8,7 +8,8 @@ declare namespace Cloudflare {
   }
   interface Env {
     VERSION_DB: D1Database;
-    VMETRICS_API_TOKEN?: string;
+    METRICS_URL?: string;
+    METRICS_TOKEN?: string;
     ENVIRONMENT: string;
     GITHUB_APP_ID?: string;
     GITHUB_APP_PRIVATE_KEY?: string;

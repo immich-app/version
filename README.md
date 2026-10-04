@@ -1,6 +1,6 @@
 # version
 
-Cloudflare Worker behind `version.immich.cloud`. It serves the latest Immich release to servers doing version checks, release changelogs, and the list of archived docs versions.
+Cloudflare Worker that serves the latest Immich release to servers doing version checks, release changelogs, and the list of archived docs versions. This repository deploys a fresh instance to the FUTO Cloudflare account; the existing `version.immich.cloud` deployment still runs from [immich-app/services](https://github.com/immich-app/services) until traffic is migrated.
 
 | Route                   | Description                                                                 |
 | ----------------------- | --------------------------------------------------------------------------- |
@@ -17,7 +17,7 @@ Releases are stored in D1 and kept in sync by the release webhook and two crons:
 ```bash
 pnpm install
 pnpm run dev        # wrangler dev
-pnpm run test       # vitest
+pnpm run test       # vitest run
 pnpm run check      # tsc --noEmit
 pnpm run lint
 pnpm run format
@@ -34,4 +34,4 @@ cd deployment/modules/cloudflare/workers/version
 ENVIRONMENT=dev TF_VAR_stage= mise run tg plan
 ```
 
-This worker previously lived in [immich-app/services](https://github.com/immich-app/services). Commit messages that reference PRs from before the move link to that repository.
+The history of this worker was carried over from immich-app/services. Commit messages that reference PRs from before the move link to that repository.

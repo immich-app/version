@@ -4,9 +4,12 @@ resource "random_password" "webhook_secret" {
 }
 
 resource "cloudflare_worker" "worker" {
-  account_id = var.cloudflare_account_id
+  account_id = local.account_id
   name       = "${var.app_name}-api${local.resource_suffix}"
-  logpush    = true
+
+  observability = {
+    enabled = true
+  }
 }
 
 resource "terraform_data" "source_hash" {
@@ -14,9 +17,9 @@ resource "terraform_data" "source_hash" {
 }
 
 resource "cloudflare_worker_version" "worker" {
-  account_id = var.cloudflare_account_id
+  account_id = local.account_id
   worker_id  = cloudflare_worker.worker.id
-  bindings = [
+  bindings = concat([
     {
       name = "ENVIRONMENT"
       type = "plain_text"
@@ -26,11 +29,6 @@ resource "cloudflare_worker_version" "worker" {
       name = "VERSION_DB"
       type = "d1"
       id   = cloudflare_d1_database.version.id
-    },
-    {
-      name = "VMETRICS_API_TOKEN"
-      type = "secret_text"
-      text = var.vmetrics_api_token
     },
     {
       name = "GITHUB_APP_ID"
@@ -52,7 +50,18 @@ resource "cloudflare_worker_version" "worker" {
       type = "secret_text"
       text = random_password.webhook_secret.result
     },
-  ]
+    ], nonsensitive(var.o11y_vmauth_token != "") ? [
+    {
+      name = "METRICS_URL"
+      type = "plain_text"
+      text = "${local.o11y_gateway}/insert/0/influx/write"
+    },
+    {
+      name = "METRICS_TOKEN"
+      type = "secret_text"
+      text = var.o11y_vmauth_token
+    },
+  ] : [])
   compatibility_date  = "2025-09-16"
   compatibility_flags = ["nodejs_compat"]
   main_module         = "index.js"
@@ -71,7 +80,7 @@ resource "cloudflare_worker_version" "worker" {
 }
 
 resource "cloudflare_workers_deployment" "worker" {
-  account_id  = var.cloudflare_account_id
+  account_id  = local.account_id
   script_name = cloudflare_worker.worker.name
   strategy    = "percentage"
   versions = [
@@ -83,25 +92,18 @@ resource "cloudflare_workers_deployment" "worker" {
 }
 
 resource "cloudflare_workers_cron_trigger" "sync" {
-  account_id  = var.cloudflare_account_id
+  account_id  = local.account_id
   script_name = cloudflare_worker.worker.name
   schedules   = [{ cron = "*/30 * * * *" }, { cron = "0 3 * * *" }]
   depends_on  = [cloudflare_workers_deployment.worker]
 }
 
-data "cloudflare_zone" "immich_cloud" {
-  filter = {
-    name = "immich.cloud"
-  }
-}
-
 resource "cloudflare_workers_custom_domain" "worker" {
-  account_id  = var.cloudflare_account_id
-  environment = "production"
-  hostname    = module.domain.fqdn
-  service     = cloudflare_worker.worker.name
-  zone_id     = data.cloudflare_zone.immich_cloud.zone_id
-  depends_on  = [cloudflare_workers_deployment.worker]
+  account_id = local.account_id
+  hostname   = module.domain.fqdn
+  service    = cloudflare_worker.worker.name
+  zone_name  = var.zone_name
+  depends_on = [cloudflare_workers_deployment.worker]
 }
 
 module "domain" {
@@ -110,7 +112,7 @@ module "domain" {
   app_name = var.app_name
   stage    = var.stage
   env      = var.env
-  domain   = "immich.cloud"
+  domain   = var.zone_name
 }
 
 output "preview_url" {

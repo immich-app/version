@@ -29,7 +29,11 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const deferredRepository = new DeferredRepository(ctx);
     const headerProvider = new HeaderMetricsProvider();
-    const influxProvider = new InfluxMetricsProvider(env.VMETRICS_API_TOKEN ?? '', env.ENVIRONMENT ?? '');
+    const influxProvider = new InfluxMetricsProvider(
+      env.METRICS_URL ?? '',
+      env.METRICS_TOKEN ?? '',
+      env.ENVIRONMENT ?? '',
+    );
     deferredRepository.defer(() => influxProvider.flush());
     const metrics = new CloudflareMetricsRepository(
       'version',
@@ -236,7 +240,11 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    const influxProvider = new InfluxMetricsProvider(env.VMETRICS_API_TOKEN ?? '', env.ENVIRONMENT ?? '');
+    const influxProvider = new InfluxMetricsProvider(
+      env.METRICS_URL ?? '',
+      env.METRICS_TOKEN ?? '',
+      env.ENVIRONMENT ?? '',
+    );
     const request = new Request('https://localhost/cron');
     const metrics = new CloudflareMetricsRepository('version', request, [influxProvider], env.ENVIRONMENT ?? '');
 

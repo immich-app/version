@@ -7,12 +7,12 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "< 5.26.0"
     }
-    random = {
-      source  = "hashicorp/random"
+    null = {
+      source  = "hashicorp/null"
       version = ">= 3"
     }
-    grafana = {
-      source  = "grafana/grafana"
+    random = {
+      source  = "hashicorp/random"
       version = ">= 3"
     }
   }

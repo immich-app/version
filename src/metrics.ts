@@ -93,22 +93,14 @@ export class HeaderMetricsProvider implements IMetricsProviderRepository {
   }
 }
 
-function getMetricsWriteUrl(environment: string): string {
-  return environment === 'prod'
-    ? 'https://cf-workers.monitoring.immich.cloud/write'
-    : `https://cf-workers.monitoring.${environment || 'dev'}.immich.cloud/write`;
-}
-
 export class InfluxMetricsProvider implements IMetricsProviderRepository {
   private metrics: string[] = [];
-  private writeUrl: string;
 
   constructor(
-    private influxApiToken: string,
+    private writeUrl: string,
+    private token: string,
     private environment: string,
-  ) {
-    this.writeUrl = getMetricsWriteUrl(environment);
-  }
+  ) {}
 
   pushMetric(metric: Metric) {
     const point = new Point(metric.name);
@@ -132,13 +124,13 @@ export class InfluxMetricsProvider implements IMetricsProviderRepository {
     if (this.environment !== 'prod') {
       console.log(body);
     }
-    if (!this.influxApiToken) {
+    if (!this.writeUrl || !this.token) {
       return;
     }
     const response = await fetch(this.writeUrl, {
       method: 'POST',
       body,
-      headers: { Authorization: `Token ${this.influxApiToken}` },
+      headers: { Authorization: `Bearer ${this.token}` },
     });
     if (!response.ok) {
       console.error('Failed to push metrics', response.status, response.statusText);

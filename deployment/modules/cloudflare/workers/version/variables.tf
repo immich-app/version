@@ -1,18 +1,23 @@
 variable "stage" {}
 variable "env" {}
 variable "app_name" {}
-variable "cloudflare_account_id" {}
 variable "dist_dir" {}
+
+variable "zone_name" {
+  description = "Zone the worker is served under, set in terragrunt.hcl"
+  type        = string
+}
 
 variable "migrations_dir" {
   description = "Absolute path to D1 migration SQL files"
   type        = string
 }
 
-variable "vmetrics_api_token" {
-  description = "VMetrics API token for InfluxDB metrics"
+variable "o11y_vmauth_token" {
+  description = "Bearer token for the o11y vmauth gateway. Metrics are only shipped when this is set"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "github_app_readonly_id" {
@@ -29,15 +34,4 @@ variable "github_app_readonly_pem_file" {
 variable "github_app_readonly_installation_id" {
   description = "GitHub App installation ID for the Immich Read-Only app"
   type        = string
-}
-
-variable "grafana_url" {
-  description = "Grafana instance URL"
-  type        = string
-}
-
-variable "grafana_token" {
-  description = "Grafana API authentication token"
-  type        = string
-  sensitive   = true
 }
