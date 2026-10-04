@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Production
+dist/
+build/
+
+# Wrangler
+.wrangler/
+.dev.vars
+
+# Local-only env files (the tracked one is `deployment/.env`)
+deployment/.env.*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terragrunt-cache/
+*.tfplan
+*.tfvars
+!*.tfvars.example
+
+# TypeScript
+*.tsbuildinfo
+
+# Misc
+.cache/
+tmp/
+.claude/
