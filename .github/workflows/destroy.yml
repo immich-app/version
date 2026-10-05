@@ -1,5 +1,9 @@
 name: Destroy PR environment
 on:
+  # zizmor: ignore[dangerous-triggers]
+  # pull_request_target is deliberate: it runs the base branch's teardown logic
+  # (not the closing PR's, which may be stale) and never checks out or executes
+  # untrusted PR code, so it is safe here.
   pull_request_target:
     types: [closed]
   workflow_dispatch:
@@ -8,6 +12,9 @@ on:
         description: 'PR number whose pr-<N> stage to destroy in dev + prod'
         required: true
         type: string
+
+permissions:
+  contents: read
 
 env:
   TG_NON_INTERACTIVE: 'true'
