@@ -11,10 +11,9 @@ include {
 }
 
 locals {
-  env      = get_env("TF_VAR_env")
-  stage    = get_env("TF_VAR_stage")
-  app_name = "version"
-  # The zone also names the state schema, so it must not change after the first apply.
+  env       = get_env("TF_VAR_env")
+  stage     = get_env("TF_VAR_stage")
+  app_name  = "version"
   zone_name = "futo.cloud"
 }
 
@@ -28,6 +27,6 @@ remote_state {
 
   config = {
     conn_str    = get_env("TF_VAR_tf_state_postgres_conn_str")
-    schema_name = "cloudflare_workers_${replace(local.zone_name, ".", "_")}_${local.app_name}_${local.env}${local.stage}"
+    schema_name = "cloudflare_workers_futo_${local.app_name}_${local.env}${local.stage}"
   }
 }

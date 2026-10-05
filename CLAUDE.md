@@ -41,7 +41,7 @@ Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They impor
 
 - The Cloudflare account ID and the `version_deploy` API token come from the `prod_cloudflare_futo_api_keys` remote state, which core-infra-tf manages.
 - The zone is set once in `terragrunt.hcl` (`zone_name`). The worker is served at `version.<zone>`, `version.dev.<zone>` and `version.pr-<N>.dev.<zone>`.
-- The state schema is `cloudflare_workers_<zone>_version_${env}${stage}`, derived from the zone, so changing the zone after the first apply points at an empty state.
+- The state schema is `cloudflare_workers_futo_version_${env}${stage}`. It doesn't depend on the zone, so changing `zone_name` only moves the custom domain and the release webhook URL.
 - Prod and dev each manage a `release` webhook on `immich-app/immich` (`webhook.tf`, via the Immich Tofu GitHub App) that posts to `/webhook`, signed with the `GITHUB_WEBHOOK_SECRET` binding. PR stages get no hook and rely on the sync crons.
 - CI deploys with `mise run tf:apply` from `deployment/`. PRs deploy a `pr-<N>` stage to dev, and `main` deploys dev and prod.
 - Terraform reads the bundle from `${dist_dir}/version/index.js` and the migrations from `migrations_dir`, so the build must output to `dist/version/`.
