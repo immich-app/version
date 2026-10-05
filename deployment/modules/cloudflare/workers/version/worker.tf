@@ -106,7 +106,7 @@ resource "cloudflare_workers_deployment" "worker" {
 resource "cloudflare_workers_cron_trigger" "sync" {
   account_id  = local.account_id
   script_name = cloudflare_worker.worker.name
-  schedules   = [{ cron = "*/30 * * * *" }, { cron = "0 3 * * *" }]
+  schedules   = [{ cron = "* * * * *" }, { cron = "0 3 * * *" }]
   depends_on  = [cloudflare_workers_deployment.worker]
 }
 
