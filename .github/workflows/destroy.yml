@@ -21,7 +21,13 @@ env:
 
 jobs:
   destroy:
+    # Fork PRs never deploy a preview, so there is nothing to tear down.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # Shared with deploy-dev in build.yml, so the teardown waits for a running deploy of the same stage.
+    concurrency:
+      group: version-${{ matrix.environment }}-pr-${{ github.event.inputs.pr_number || github.event.number }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
