@@ -12,13 +12,25 @@ resource "cloudflare_worker" "worker" {
   }
 }
 
+locals {
+  # Workers created through the API default to the legacy bundled usage model,
+  # whose 50ms CPU cap the initial full release sync can exceed.
+  usage_model = "standard"
+}
+
 resource "terraform_data" "source_hash" {
-  input = filesha256("${var.dist_dir}/${var.app_name}/index.js")
+  # A version's usage_model can't be changed in place, so it is part of the
+  # trigger that creates a new version, alongside the bundle.
+  input = {
+    bundle      = filesha256("${var.dist_dir}/${var.app_name}/index.js")
+    usage_model = local.usage_model
+  }
 }
 
 resource "cloudflare_worker_version" "worker" {
-  account_id = local.account_id
-  worker_id  = cloudflare_worker.worker.id
+  account_id  = local.account_id
+  worker_id   = cloudflare_worker.worker.id
+  usage_model = local.usage_model
   bindings = concat([
     {
       name = "ENVIRONMENT"
