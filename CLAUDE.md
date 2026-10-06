@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-The `version` Cloudflare Worker. It serves the latest Immich release (`/version`) and the archived docs versions list (`/v1/docs/versions`). Releases are stored in D1 and synced from `immich-app/immich` via a GitHub `release` webhook (`/webhook`) and crons. It was extracted from the `immich-app/services` monorepo with its history.
+The `version` Cloudflare Worker. It serves the latest Immich release (`/version`) and the archived docs versions list (`/v1/docs/versions`). Releases are stored in D1 per project (see Projects) and synced from `immich-app/immich` via a GitHub `release` webhook (`/webhook`) and crons. It was extracted from the `immich-app/services` monorepo with its history.
 
 This repo deploys a fresh instance to the FUTO Cloudflare account. The existing `version.immich.cloud` deployment is still managed from `immich-app/services` and is migrated to this one later; nothing here touches it.
 
@@ -40,6 +40,8 @@ deployment/
 
 Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They import `env` and `exports` from `cloudflare:workers`. `vitest.config.ts` reads `migrations/`, and `src/test/setup.ts` applies those files before every test file, the same way `d1.tf` does. `src/migrations.test.ts` seeds a row into every table, replays the migrations twice, and expects the schema and data to be unchanged.
 
+`src/legacy-routes.test.ts` pins `/version` and `/v1/docs/versions` byte for byte: status, body text and headers. Immich servers and the docs site depend on them, so a change there is a breaking change, not a test to update.
+
 ### Migrations
 
 `d1.tf` has no ledger. Whenever a migration file changes, and on every retry, it re-runs **every** file against the live database. A file stops at its first failing statement, and only "already exists" and "duplicate column" errors are tolerated. So every migration must be safe to re-run:
@@ -52,7 +54,7 @@ The replay test fails on anything that errors, or that changes the schema or any
 
 ## Projects
 
-`projects.json` registers the projects whose releases the service tracks. Only Immich is registered, and nothing reads the registry at runtime yet. `src/projects.ts` validates it, compiles its tag patterns and provides `normalize(project, tag)`. `src/version-schemes.ts` parses and orders versions.
+`projects.json` registers the projects whose releases the service tracks. Only Immich is registered: it is `legacyProject`, which `/version`, `/v1/docs/versions`, the webhook and the crons serve. `src/projects.ts` validates the registry, compiles its tag patterns and provides `normalize(project, tag)`. `src/version-schemes.ts` parses and orders versions.
 
 - An id (`^[a-z][a-z0-9-]{1,31}$`) is permanent: it is the URL segment, the D1 key and the `version_project` metric tag.
 - `tags.pattern` must match the whole tag and capture the version in a group named `version`, which `tags.scheme` (`semver` or `dotted`) parses. Any other tag is not the project's.
@@ -61,6 +63,15 @@ The replay test fails on anything that errors, or that changes the schema or any
 - `examples` maps real tags to the version and channels they must normalize to, or `null` for a tag the project ignores. `src/projects.test.ts` checks every one, and CI runs it as its own "Validate projects.json" step.
 - `projects.schema.json` is only for editors; the validator in `src/projects.ts` is the check that counts. A test keeps their ids, schemes and source types in step.
 - `analytics.clientIdentity` puts client IPs and user agents on request metrics. Only the projects in the test's `CLIENT_IDENTITY_PROJECTS` may set it.
+
+### Stored releases
+
+- `project_releases` holds every project's releases, keyed `(project, tag)`. Only tags `normalize()` accepts are stored, with the forge's release id (`source_id`) and prerelease flag (`forge_prerelease`, kept for reference: channels go by the tag).
+- Nothing is ordered in SQL. A cache miss reads all of a project's rows (about 300 for Immich; `d1_get_latest`'s duration measures it), and `src/releases.ts` normalizes each tag again and orders them by the project's scheme. So a narrowed pattern or channel takes effect without a resync, and a new scheme needs no migration.
+- Each project has its own memory cache (`versionCaches`). One read fills every channel, and an empty channel is cached as `null`, so it isn't read again on every request.
+- The full fetch writes only new or changed rows (`changedReleases()`: published date, source id or forge prerelease flag), in multi-row statements of at most 100 bound parameters, D1's limit. A project with nothing stored has no latest release to match GitHub's, so the next `*/30` run fetches everything.
+- Every full fetch records `project_sync_state.full_synced_at`; a webhook write never does. The `*/30` sync only skips the full fetch when the project has one recorded and GitHub's latest is already its newest stored release, so a release the webhook stored first never stands in for the history before it.
+- The legacy `releases` table (`0001`, `0002`) is no longer read or written. It stays until it is dropped in its own migration.
 
 ## Deployment
 

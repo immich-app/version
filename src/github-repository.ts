@@ -1,5 +1,5 @@
 import semver from 'semver';
-import type { GitHubRelease } from './types.js';
+import type { GitHubRelease, ProjectRelease } from './types.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/immich-app/immich/releases';
 const MAX_PAGES = 3;
@@ -114,5 +114,15 @@ function parseRelease(item: unknown): GitHubRelease | null {
     id: item.id,
     tag_name: item.tag_name,
     published_at: String(item.published_at ?? ''),
+    prerelease: item.prerelease === true,
+  };
+}
+
+export function toProjectRelease(release: GitHubRelease): ProjectRelease {
+  return {
+    tag: release.tag_name,
+    published_at: release.published_at,
+    source_id: String(release.id),
+    forge_prerelease: release.prerelease,
   };
 }
