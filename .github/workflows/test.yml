@@ -1,13 +1,10 @@
 name: Test
+# Build calls this on every push and PR, so the deploys can wait for it.
+# No concurrency group: in a called workflow github.workflow is the caller's
+# name, so a group here would collide with Build's own.
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches: [main]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read
@@ -45,6 +42,10 @@ jobs:
 
       - name: Run unit tests
         run: pnpm run test
+        if: ${{ !cancelled() }}
+
+      - name: Test the deploy smoke test
+        run: ./deployment/scripts/smoke-test.test.sh
         if: ${{ !cancelled() }}
 
   terraform-lock-files:
