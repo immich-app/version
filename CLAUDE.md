@@ -45,6 +45,8 @@ Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They impor
 - The state schema is `cloudflare_workers_futo_version_${env}${stage}`. It doesn't depend on the zone, so changing `zone_name` only moves the custom domain and the release webhook URL.
 - Prod and dev each manage a `release` webhook on `immich-app/immich` (`webhook.tf`, via the Immich Tofu GitHub App) that posts to `/webhook`, signed with the `GITHUB_WEBHOOK_SECRET` binding. PR stages get no hook and rely on the sync crons.
 - CI deploys with `mise run tf:apply` from `deployment/`. PRs deploy a `pr-<N>` stage to dev, and `main` deploys dev and prod. The Build workflow can also be run by hand (workflow_dispatch); on `main` that redeploys dev and prod.
+- Build runs the Test workflow (`workflow_call`) and every deploy waits for it. On `main`, prod also waits for dev to apply and pass `deployment/scripts/smoke-test.sh` (`/health` is exactly 200 with `{"status":"ok"}`, and `/version` is 200 or the 404 for an empty table, not a missing route), and prod runs the same script after its own apply. `deployment/scripts/smoke-test.test.sh` tests that gate against a stub `curl` in the Test workflow.
+- The worker version `depends_on` the D1 migrations, so new code never goes live before its schema.
 - Terraform reads the bundle from `${dist_dir}/version/index.js` and the migrations from `migrations_dir`, so the build must output to `dist/version/`.
 - `compatibility_date` and the cron expressions are duplicated in `wrangler.toml` and `worker.tf`, and must match. The full-sync cron is detected by string equality on `0 3 * * *` in `src/index.ts`.
 

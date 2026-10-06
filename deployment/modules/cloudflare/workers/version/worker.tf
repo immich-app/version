@@ -122,6 +122,11 @@ resource "cloudflare_worker_version" "worker" {
       error_message = "TF_VAR_o11y_vmauth_token is required outside PR stages: dev main and prod always ship metrics to o11y."
     }
   }
+
+  # Nothing else orders the two, so without this a deploy could start serving
+  # new code before the migration it needs has run, or keep serving it after
+  # the migration failed.
+  depends_on = [null_resource.d1_migrations]
 }
 
 resource "cloudflare_workers_deployment" "worker" {
@@ -158,6 +163,11 @@ module "domain" {
   stage    = var.stage
   env      = var.env
   domain   = var.zone_name
+}
+
+output "url" {
+  description = "Base URL the worker serves on in this env and stage (dev main, prod or a pr-<N> preview)"
+  value       = "https://${module.domain.fqdn}"
 }
 
 output "preview_url" {
