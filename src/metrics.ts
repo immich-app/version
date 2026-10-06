@@ -220,11 +220,13 @@ export class InfluxMetricsProvider implements IMetricsProviderRepository {
     }
   }
 
+  // Ships the lines pushed since the last flush. A cron run flushes after every
+  // project, so a later one that hangs can't take the earlier ones' lines with it.
   async flush() {
     if (this.metrics.length === 0) {
       return;
     }
-    const body = this.metrics.join('\n');
+    const body = this.metrics.splice(0).join('\n');
     // Without env the series would reach o11y missing an identity label.
     if (!this.writeUrl || !this.token || !this.identity.env) {
       // Not shipping (wrangler dev, tests, PR stages): log the lines instead. A

@@ -91,6 +91,47 @@ export const findProject = (id: string, list: readonly Project[] = projects) =>
   list.find((project) => project.id === id);
 
 /**
+ * Identifies a source whatever its current name: a GitHub repository by its
+ * id, which survives renames and transfers. Projects with the same key read the
+ * same releases, each keeping only the tags its pattern matches.
+ */
+export function sourceKey(source: ProjectSource): string {
+  switch (source.type) {
+    case 'github-releases': {
+      return `${source.type}:${source.repoId}`;
+    }
+  }
+}
+
+// The projects that read their releases from the same source as `project`, itself included.
+export const sameSource = (project: Project, list: readonly Project[] = projects) =>
+  list.filter((other) => sourceKey(other.source) === sourceKey(project.source));
+
+/**
+ * The projects whose releases come from the GitHub repository a webhook payload
+ * names. Its numeric id decides: ids are permanent, so a delivery still finds
+ * its projects after a rename or a transfer, and a repository that takes up an
+ * old name never reaches them. Only a payload without an id is matched by its
+ * name, ignoring case; any other id that isn't a number matches nothing. A match takes every project on that source (sameSource()).
+ */
+export function projectsForGitHubRepository(repository: unknown, list: readonly Project[] = projects): Project[] {
+  const { id, full_name } = (typeof repository === 'object' && repository !== null ? repository : {}) as {
+    id?: unknown;
+    full_name?: unknown;
+  };
+  const name = typeof full_name === 'string' ? full_name.toLowerCase() : undefined;
+  // Any id but a number is malformed and matches nothing, never falling back to the name.
+  const matches = (source: GitHubReleasesSource) =>
+    id === undefined || id === null ? name === source.repo.toLowerCase() : id === source.repoId;
+  const matched = new Set(
+    list
+      .filter(({ source }) => source.type === 'github-releases' && matches(source))
+      .map(({ source }) => sourceKey(source)),
+  );
+  return list.filter(({ source }) => matched.has(sourceKey(source)));
+}
+
+/**
  * Validates a registry with projects.json's shape and compiles its patterns.
  * Throws one error that lists every problem. projects.schema.json describes
  * the same shape for editors, but this is the check that counts.
@@ -360,14 +401,14 @@ function loadExamples(
 // first (src/projects.test.ts), so a bad entry never reaches a deploy.
 export const projects: readonly Project[] = loadProjects(registry);
 
-function requireProject(id: string): Project {
-  const project = findProject(id);
+export function requireProject(id: string, list: readonly Project[] = projects): Project {
+  const project = findProject(id, list);
   if (!project) {
     throw new Error(`projects.json must register "${id}"`);
   }
   return project;
 }
 
-// The project the legacy routes, the release webhook and the sync crons serve.
+// The project the legacy /version and /v1/docs/versions routes serve.
 // src/projects.test.ts keeps it on exactly the channels /version accepts.
 export const legacyProject = requireProject(LEGACY_PROJECT_ID);

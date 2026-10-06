@@ -1,13 +1,36 @@
 import type { DeferredRepository } from './deferred.js';
-import { toProjectRelease, type IGitHubRepository } from './github-repository.js';
+import { toProjectRelease } from './github-source.js';
 import { MemoryCache } from './memory-cache.js';
 import { Metric, projectMetrics, type IMetricsRepository } from './metrics.js';
 import { normalize, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
-import { latestPerChannel } from './releases.js';
+import { latestPerChannel, retractedReleases, skippedTags } from './releases.js';
+import { MAX_RETRACTION_CHECKS, type FetchedReleases, type ReleaseSource } from './sources.js';
 import type { GitHubRelease, LatestRelease, ProjectRelease } from './types.js';
 
 const VERSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+export type SyncMode = 'full' | 'incremental';
+
+export interface SyncOptions {
+  // List every release, as the nightly run does.
+  full?: boolean;
+  // The project's sync deadline: it aborts the source's requests, and no write
+  // starts after it.
+  signal?: AbortSignal;
+  // The registered projects on the project's source, itself included (sameSource()).
+  sameSource?: readonly Project[];
+}
+
+export interface SyncResult {
+  mode: SyncMode;
+  // The project's stored releases after the sync.
+  releases: ProjectRelease[];
+  written: number;
+  deleted: number;
+  // See skippedTags().
+  skipped: number;
+}
 
 // The newest release on each of a project's channels, null for an empty one.
 type ChannelReleases = Map<string, LatestRelease | null>;
@@ -118,65 +141,97 @@ export class VersionService {
   }
 
   /**
-   * Fetches every release when GitHub's latest isn't the newest stored one on
-   * the project's default channel, or when the project has never had a full
-   * sync. A webhook can store the latest release first, which must not stand in
-   * for the history before it.
+   * Brings the project's stored releases in line with its source. A full sync
+   * lists every release (up to the source's cap), writes what changed, deletes
+   * what the source took down if the listing reached its end and the source
+   * confirms it (retractedReleases(), confirmRetracted()), and records the full
+   * sync. An incremental one lists the newest 20 and only writes. A project
+   * gets full syncs until one succeeds, so a webhook that stored the latest
+   * release first can't stand in for the history before it.
+   *
+   * Past the signal's deadline the caller has stopped waiting (withDeadline()).
+   * A D1 call can't be aborted, so one already running may still land, but
+   * nothing new starts: no write, no record of the full sync.
    */
-  async syncFromGitHub(
-    project: Project,
-    githubRepository: IGitHubRepository,
-  ): Promise<{ synced: number; full: boolean }> {
+  async syncProject(project: Project, source: ReleaseSource, options: SyncOptions = {}): Promise<SyncResult> {
+    const { full = false, signal, sameSource = [project] } = options;
     const metrics = projectMetrics(this.metrics, project.id);
-    const latest = await metrics.monitorAsyncFunction({ name: 'github_fetch_latest' }, () =>
-      githubRepository.fetchLatestRelease(),
-    )();
-
-    if (!latest) {
-      return { synced: 0, full: false };
-    }
-
     const stored = await this.releaseRepository.list(project.id);
-    const fullySynced = (await this.releaseRepository.getFullSyncedAt(project.id)) !== null;
-    if (fullySynced && latestPerChannel(project, stored).get(project.defaultChannel)?.tag === latest.tag_name) {
-      return { synced: 0, full: false };
+    const mode: SyncMode =
+      full || (await this.releaseRepository.getFullSyncedAt(project.id)) === null ? 'full' : 'incremental';
+    signal?.throwIfAborted();
+
+    const tags = { source: project.source.type };
+    let fetched: FetchedReleases;
+    if (mode === 'full') {
+      fetched = await metrics.monitorAsyncFunction({ name: 'source_fetch_all', tags }, () =>
+        source.fetchAll({ signal }),
+      )();
+    } else {
+      const recent = await metrics.monitorAsyncFunction({ name: 'source_fetch_recent', tags }, () =>
+        source.fetchRecent({ signal }),
+      )();
+      fetched = { releases: recent, complete: false };
     }
+    signal?.throwIfAborted();
 
-    const synced = await this.storeAllReleases(project, githubRepository, stored);
-    metrics.push(Metric.create('cron_releases_synced').intField('count', synced));
-    return { synced, full: true };
-  }
-
-  async fullSync(project: Project, githubRepository: IGitHubRepository): Promise<number> {
-    const stored = await this.releaseRepository.list(project.id);
-    const count = await this.storeAllReleases(project, githubRepository, stored);
-    projectMetrics(this.metrics, project.id).push(Metric.create('cron_full_sync').intField('count', count));
-    return count;
-  }
-
-  // Fetches every release, writes the ones that changed and records the full
-  // sync. Returns how many releases were fetched.
-  private async storeAllReleases(
-    project: Project,
-    githubRepository: IGitHubRepository,
-    stored: ProjectRelease[],
-  ): Promise<number> {
-    const metrics = projectMetrics(this.metrics, project.id);
-    const releases = await metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>
-      githubRepository.fetchReleases(),
-    )();
-
-    const fetched = releases.map((release) => toProjectRelease(release));
-    const changed = changedReleases(project, fetched, stored);
+    const changed = changedReleases(project, fetched.releases, stored);
+    // Only a full listing shows what the source may no longer have. The source
+    // is asked about each, up to MAX_RETRACTION_CHECKS a sync; the rest wait.
+    const unlisted = mode === 'full' ? retractedReleases(fetched, stored).slice(0, MAX_RETRACTION_CHECKS) : [];
+    // The cache is dropped after each write that lands, even past the deadline,
+    // so a later one that fails or never starts can't leave it serving what the
+    // first one changed.
     if (changed.length > 0) {
       await metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
         this.releaseRepository.upsertMany(project.id, changed),
       )();
       versionCaches.invalidate(project.id);
     }
+    // After the upsert, so checks that run long can't hold up new releases.
+    let retracted: ProjectRelease[] = [];
+    let deleted = 0;
+    // Rows written from here on (a webhook storing a release while the checks
+    // run, even under a candidate's own id) are newer than what was checked.
+    // D1's clock, which stamps every write when it lands.
+    let checksStartedAt = '';
+    if (unlisted.length > 0) {
+      signal?.throwIfAborted();
+      checksStartedAt = await this.releaseRepository.now();
+      retracted = await metrics.monitorAsyncFunction({ name: 'source_confirm_retracted', tags }, () =>
+        source.confirmRetracted(unlisted, { signal }),
+      )();
+    }
+    if (retracted.length > 0) {
+      signal?.throwIfAborted();
+      deleted = await metrics.monitorAsyncFunction({ name: 'd1_bulk_delete' }, () =>
+        // By tag and source id, and only rows not written since the checks began:
+        // a webhook may have stored a release under one of these tags, or
+        // republished one of these ids, while they ran.
+        this.releaseRepository.deleteMany(project.id, retracted, checksStartedAt),
+      )();
+      versionCaches.invalidate(project.id);
+    }
+    if (mode === 'full') {
+      signal?.throwIfAborted();
+      await this.releaseRepository.markFullSynced(project.id);
+    }
 
-    await this.releaseRepository.markFullSynced(project.id);
-    return releases.length;
+    // What is stored now, so skippedTags() can't measure from a release just
+    // taken down. Read again only after a write: an upsert can also drop a
+    // retagged release's old row (ReleaseRepository.upsertMany()).
+    const releases =
+      changed.length > 0 || retracted.length > 0 ? await this.releaseRepository.list(project.id) : stored;
+    signal?.throwIfAborted();
+
+    const skipped = skippedTags(project, sameSource, fetched.releases, releases);
+    metrics.push(Metric.create('releases_written').addTag('mode', mode).intField('count', changed.length));
+    // What the delete removed, not what was confirmed: a row written again during
+    // the checks stays, as may a retagged release's old row the upsert dropped.
+    metrics.push(Metric.create('releases_deleted').intField('count', deleted));
+    metrics.push(Metric.create('tags_skipped').intField('count', skipped));
+
+    return { mode, releases, written: changed.length, deleted, skipped };
   }
 
   // How many releases the project has stored, and the newest version on its
@@ -184,10 +239,11 @@ export class VersionService {
   // the recording rules count the servers that are up to date. Both are about
   // the project, not a request, so the webhook writes the crons' series: none
   // of the request's geo tags, or "Releases Stored" would count a project
-  // once per series.
-  async emitReleaseStats(project: Project): Promise<void> {
+  // once per series. A sync passes the releases it ended with, so they aren't
+  // read again.
+  async emitReleaseStats(project: Project, stored?: readonly ProjectRelease[]): Promise<void> {
     const metrics = projectMetrics(this.metrics, project.id, { geo: false });
-    const releases = await this.releaseRepository.list(project.id);
+    const releases = stored ?? (await this.releaseRepository.list(project.id));
     metrics.push(Metric.create('d1_release_count').intField('count', releases.length));
 
     const latest = latestPerChannel(project, releases).get(project.defaultChannel);

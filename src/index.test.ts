@@ -1,8 +1,23 @@
 import { env, exports } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GitHubRepository, toProjectRelease } from './github-repository.js';
-import worker from './index.js';
+import worker, { createWorker } from './index.js';
 import { MemoryCache } from './memory-cache.js';
+import { loadProjects, projects } from './projects.js';
+import {
+  clearReleases,
+  createWebhookSignature,
+  EDGE,
+  fetchFrom,
+  fullSyncedAt,
+  IMMICH_REPOSITORY,
+  insertRelease,
+  loggedLines,
+  publishRelease,
+  runCron,
+  seriesTags,
+  storedReleases,
+  storedTags,
+} from './test/helpers.js';
 import type { DocsVersion, VersionResponse } from './types.js';
 import { versionCaches } from './version-service.js';
 import { verifyWebhookSignature } from './webhook.js';
@@ -12,54 +27,6 @@ const mockReleases = [
   { id: 2, tag_name: 'v1.110.0', published_at: '2025-02-01T00:00:00Z' },
   { id: 1, tag_name: 'v1.100.0', published_at: '2025-01-01T00:00:00Z' },
 ];
-
-interface SeedRelease {
-  id: number;
-  tag_name: string;
-  published_at?: string;
-}
-
-async function insertRelease(release: SeedRelease, project = 'immich') {
-  await env.VERSION_DB.prepare(
-    `INSERT OR REPLACE INTO project_releases (project, tag, published_at, source_id, forge_prerelease, synced_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, '2025-01-01T00:00:00Z')`,
-  )
-    .bind(
-      project,
-      release.tag_name,
-      release.published_at ?? '',
-      String(release.id),
-      Number(release.tag_name.includes('-')),
-    )
-    .run();
-}
-
-async function clearReleases() {
-  await env.VERSION_DB.exec('DELETE FROM project_releases');
-  await env.VERSION_DB.exec('DELETE FROM project_sync_state');
-}
-
-async function storedReleases(project = 'immich') {
-  const { results } = await env.VERSION_DB.prepare(
-    'SELECT tag, published_at, source_id, forge_prerelease, synced_at FROM project_releases WHERE project = ?1 ORDER BY tag',
-  )
-    .bind(project)
-    .all<{
-      tag: string;
-      published_at: string;
-      source_id: string;
-      forge_prerelease: number | null;
-      synced_at: string;
-    }>();
-  return results;
-}
-
-async function fullSyncedAt(project = 'immich') {
-  const row = await env.VERSION_DB.prepare('SELECT full_synced_at FROM project_sync_state WHERE project = ?1')
-    .bind(project)
-    .first<{ full_synced_at: string | null }>();
-  return row?.full_synced_at ?? null;
-}
 
 // Stores a cached /version answer for Immich that is already stale.
 function setStaleCache(tag: string, published_at: string) {
@@ -92,17 +59,6 @@ async function fetchDocsVersions(): Promise<DocsVersion[]> {
   return await response.json();
 }
 
-// Tests ship nothing (no METRICS_URL), so InfluxMetricsProvider logs its lines instead.
-async function loggedLines(run: () => Promise<unknown>): Promise<string[]> {
-  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  try {
-    await run();
-    return logSpy.mock.calls.flatMap(([body]) => String(body).split('\n')).filter((l) => l.startsWith('version_'));
-  } finally {
-    logSpy.mockRestore();
-  }
-}
-
 async function httpResponseLine(url: string, init?: RequestInit) {
   const lines = await loggedLines(() => exports.default.fetch(url, init));
   const line = lines.find((l) => l.startsWith('version_http_response,'));
@@ -110,67 +66,36 @@ async function httpResponseLine(url: string, init?: RequestInit) {
   return line!;
 }
 
-const IDENTITY_LABELS = new Set(['project', 'env', 'cluster', 'provider', 'region']);
-const unescape = (value: string) => value.replaceAll(/\\(.)/g, '$1');
-
-// Each logged series' own tags, without the identity labels, by measurement.
-function seriesTags(lines: string[]): Record<string, Record<string, string>[]> {
-  const series: Record<string, Record<string, string>[]> = {};
-  for (const line of lines) {
-    // Line protocol escapes spaces, commas and equals signs with a backslash.
-    const [name, ...pairs] = /^(?:\\.|[^\\ ])*/.exec(line)![0].match(/(?:\\.|[^\\,])+/g)!;
-    const tags = pairs
-      .map((pair) => /^((?:\\.|[^\\=])*)=(.*)$/.exec(pair)!)
-      .filter(([, key]) => !IDENTITY_LABELS.has(key))
-      .map(([, key, value]) => [unescape(key), unescape(value)]);
-    (series[name] ??= []).push(Object.fromEntries(tags));
-  }
-  return series;
-}
-
-// A request through LHR, as Cloudflare would describe it.
-const EDGE = { cf: { continent: 'EU', colo: 'LHR', asOrganization: 'Example AS' } } as RequestInit;
-
-async function createWebhookSignature(body: string, secret: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
-  const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  return `sha256=${hex}`;
-}
-
-// Posts a signed `published` release delivery, as GitHub would. The secret is
-// wrangler.toml's GITHUB_WEBHOOK_SECRET.
-async function publishRelease(release: Record<string, unknown>, init?: RequestInit) {
-  const body = JSON.stringify({ action: 'published', release });
-  return await exports.default.fetch('https://example.com/webhook', {
-    ...init,
-    method: 'POST',
-    body,
-    headers: {
-      'X-Hub-Signature-256': await createWebhookSignature(body, 'test-secret'),
-      'X-GitHub-Event': 'release',
+// A second project, on its own repository, served on a beta channel by default.
+const [notes] = loadProjects({
+  projects: [
+    {
+      id: 'notes',
+      name: 'Notes',
+      source: { type: 'github-releases', repo: 'futo-org/notes', repoId: 7 },
+      tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+(?:-beta\.\d+)?)$`, scheme: 'semver' },
+      channels: { stable: [], beta: ['beta'] },
+      defaultChannel: 'beta',
+      analytics: { clientIdentity: false },
+      examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable', 'beta'] } },
     },
-  });
+  ],
+});
+const withNotes = createWorker({ projects: [...projects, notes] });
+
+// A response from the worker with the notes project registered, without Server-Timing.
+async function get(path: string, init?: RequestInit) {
+  const response = await fetchFrom(withNotes, `https://example.com${path}`, init);
+  return {
+    status: response.status,
+    headers: Object.fromEntries([...response.headers].filter(([name]) => name !== 'server-timing')),
+    body: await response.text(),
+  };
 }
 
-// Runs the scheduled handler for a cron expression and waits for what it deferred.
-async function runCron(cron: string) {
-  const waiting: Promise<unknown>[] = [];
-  const ctx = {
-    waitUntil: (promise: Promise<unknown>) => {
-      waiting.push(promise);
-    },
-    passThroughOnException: () => {},
-    props: {},
-  } as unknown as ExecutionContext;
-  await worker.scheduled({ cron, scheduledTime: Date.now() } as ScheduledEvent, env, ctx);
-  await Promise.all(waiting);
+async function getJson(path: string): Promise<unknown> {
+  const { body } = await get(path);
+  return JSON.parse(body);
 }
 
 describe('MemoryCache', () => {
@@ -242,6 +167,15 @@ describe('Version Worker', () => {
       expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, POST, OPTIONS');
       expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type');
       expect(response.headers.get('Access-Control-Max-Age')).toBe('86400');
+    });
+
+    it('advertises HEAD, and no POST, for the project route', async () => {
+      const response = await exports.default.fetch('https://example.com/v1/projects/immich/version', {
+        method: 'OPTIONS',
+        headers: { 'Access-Control-Request-Method': 'HEAD', 'Access-Control-Request-Headers': 'Content-Type' },
+      });
+      expect(response.headers.get('Access-Control-Allow-Methods')).toBe('GET, HEAD, OPTIONS');
+      expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type');
     });
   });
 
@@ -467,6 +401,18 @@ describe('Version Worker', () => {
   describe('POST /webhook', () => {
     const webhookSecret = 'test-secret';
 
+    // Posts a signed delivery with any body.
+    async function deliver(body: string, event = 'release') {
+      return await exports.default.fetch('https://example.com/webhook', {
+        method: 'POST',
+        body,
+        headers: {
+          'X-Hub-Signature-256': await createWebhookSignature(body, webhookSecret),
+          'X-GitHub-Event': event,
+        },
+      });
+    }
+
     it('returns 401 without signature', async () => {
       const response = await exports.default.fetch('https://example.com/webhook', {
         method: 'POST',
@@ -490,180 +436,69 @@ describe('Version Worker', () => {
     });
 
     it('ignores non-release events', async () => {
-      const body = JSON.stringify({ action: 'opened' });
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'pull_request',
-        },
-      });
+      const response = await deliver(JSON.stringify({ action: 'opened' }), 'pull_request');
       expect(response.status).toBe(200);
-      const result = (await response.json()) as any;
-      expect(result.ignored).toBe(true);
+      expect(await response.json()).toEqual({ ignored: true });
     });
 
     it('ignores non-published release actions', async () => {
-      const body = JSON.stringify({ action: 'created', release: {} });
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
-      });
+      const response = await deliver(JSON.stringify({ action: 'created', release: {}, repository: IMMICH_REPOSITORY }));
       expect(response.status).toBe(200);
-      const result = (await response.json()) as any;
-      expect(result.ignored).toBe(true);
+      expect(await response.json()).toEqual({ ignored: true });
+    });
+
+    it.each(['{"action":', 'null', '[]', '"published"'])('returns 400 for the signed body %s', async (body) => {
+      const response = await deliver(body);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'Invalid JSON payload' });
     });
 
     it('upserts a published release and invalidates cache', async () => {
       // Prime the cache
       await exports.default.fetch('https://example.com/version');
 
-      const releasePayload = {
-        action: 'published',
-        release: {
-          id: 4,
-          tag_name: 'v1.130.0',
-          name: 'v1.130.0',
-          url: 'https://api.github.com/repos/immich-app/immich/releases/4',
-          body: 'New release',
-          created_at: '2025-04-01T00:00:00Z',
-          published_at: '2025-04-01T00:00:00Z',
-        },
-      };
-
-      const body = JSON.stringify(releasePayload);
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
+      const response = await publishRelease({
+        id: 4,
+        tag_name: 'v1.130.0',
+        name: 'v1.130.0',
+        body: 'New release',
+        published_at: '2025-04-01T00:00:00Z',
       });
       expect(response.status).toBe(200);
-      const result = (await response.json()) as any;
-      expect(result.success).toBe(true);
+      expect(await response.json()).toEqual({ success: true });
 
       // Verify the new release is now the latest (cache was invalidated)
-      const versionResponse = await exports.default.fetch('https://example.com/version');
-      const versionBody = (await versionResponse.json()) as any;
-      expect(versionBody.version).toBe('v1.130.0');
+      expect(await fetchVersion()).toMatchObject({ version: 'v1.130.0' });
     });
 
     it('updates an existing release in place', async () => {
-      const releasePayload = {
-        action: 'published',
-        release: {
-          id: 3,
-          tag_name: 'v1.120.0',
-          name: 'v1.120.0',
-          url: 'https://api.github.com/repos/immich-app/immich/releases/3',
-          body: 'Updated release notes',
-          created_at: '2025-03-01T00:00:00Z',
-          published_at: '2025-03-02T00:00:00Z',
-        },
-      };
-
-      const body = JSON.stringify(releasePayload);
-      const signature = await createWebhookSignature(body, webhookSecret);
-      await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
-      });
+      await publishRelease({ id: 3, tag_name: 'v1.120.0', published_at: '2025-03-02T00:00:00Z' });
 
       expect(await fetchVersion()).toEqual({ version: 'v1.120.0', published_at: '2025-03-02T00:00:00Z' });
       expect(await storedReleases()).toHaveLength(mockReleases.length);
     });
 
     it('returns 400 for invalid release payload', async () => {
-      const releasePayload = {
-        action: 'published',
-        release: { no_id: true },
-      };
-
-      const body = JSON.stringify(releasePayload);
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
-      });
+      const response = await publishRelease({ no_id: true });
       expect(response.status).toBe(400);
     });
 
     it('ignores draft releases', async () => {
-      const releasePayload = {
-        action: 'published',
-        release: {
-          id: 5,
-          tag_name: 'v1.140.0',
-          name: 'v1.140.0',
-          url: '',
-          body: '',
-          created_at: '',
-          published_at: '',
-          draft: true,
-        },
-      };
-
-      const body = JSON.stringify(releasePayload);
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
-      });
+      const response = await publishRelease({ id: 5, tag_name: 'v1.140.0', published_at: '', draft: true });
       expect(response.status).toBe(200);
-      const result = (await response.json()) as any;
-      expect(result.ignored).toBe(true);
+      expect(await response.json()).toEqual({ ignored: true });
+      expect(await storedReleases()).toHaveLength(mockReleases.length);
     });
 
     it('stores prerelease releases for the rc channel', async () => {
-      const releasePayload = {
-        action: 'published',
-        release: {
-          id: 6,
-          tag_name: 'v1.121.0-rc.1',
-          name: 'v1.121.0-rc.1',
-          url: '',
-          body: 'Release candidate',
-          created_at: '2025-03-15T00:00:00Z',
-          published_at: '2025-03-15T00:00:00Z',
-          prerelease: true,
-        },
-      };
-
-      const body = JSON.stringify(releasePayload);
-      const signature = await createWebhookSignature(body, webhookSecret);
-      const response = await exports.default.fetch('https://example.com/webhook', {
-        method: 'POST',
-        body,
-        headers: {
-          'X-Hub-Signature-256': signature,
-          'X-GitHub-Event': 'release',
-        },
+      const response = await publishRelease({
+        id: 6,
+        tag_name: 'v1.121.0-rc.1',
+        published_at: '2025-03-15T00:00:00Z',
+        prerelease: true,
       });
       expect(response.status).toBe(200);
-      const result = (await response.json()) as any;
-      expect(result.success).toBe(true);
+      expect(await response.json()).toEqual({ success: true });
 
       // The rc build is served on the rc channel...
       expect(await fetchVersion('rc')).toMatchObject({ version: 'v1.121.0-rc.1' });
@@ -680,13 +515,19 @@ describe('Version Worker', () => {
     it.each(['v1.130.0-rc1', 'v1.130.0-dev', 'nightly'])(
       "accepts a release tagged %s, which isn't Immich's, but stores nothing",
       async (tag) => {
-        const response = await publishRelease({ id: 7, tag_name: tag, published_at: '2025-04-01T00:00:00Z' });
+        const lines = await loggedLines(async () => {
+          const response = await publishRelease(
+            { id: 7, tag_name: tag, published_at: '2025-04-01T00:00:00Z' },
+            { init: EDGE },
+          );
+          expect(response.status).toBe(200);
+          expect(await response.json()).toEqual({ success: true });
+        });
 
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ success: true });
         const stored = await storedReleases();
         expect(stored.map((release) => release.tag)).not.toContain(tag);
         expect(await fetchVersion('rc')).toMatchObject({ version: 'v1.120.0' });
+        expect(seriesTags(lines).version_webhook_ignored).toEqual([{ reason: 'unmatched_tag', colo: 'LHR' }]);
       },
     );
 
@@ -695,6 +536,76 @@ describe('Version Worker', () => {
 
       expect(await storedReleases()).toContainEqual(expect.objectContaining({ tag: 'v1.130.0' }));
       expect(await fullSyncedAt()).toBeNull();
+    });
+
+    it.each([
+      ['no repository', null],
+      ['an unregistered repository', { id: 1, full_name: 'immich-app/other' }],
+      ["another repository under Immich's name", { id: 1, full_name: 'immich-app/immich' }],
+    ])('ignores a signed delivery from %s, and stores nothing', async (_, repository) => {
+      const lines = await loggedLines(async () => {
+        const response = await publishRelease(
+          { id: 9, tag_name: 'v9.0.0', published_at: '2025-04-01T00:00:00Z' },
+          { repository, init: EDGE },
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ ignored: true });
+      });
+
+      expect(await storedTags()).not.toContain('v9.0.0');
+      expect(seriesTags(lines).version_webhook_ignored).toEqual([{ reason: 'unknown_repo', colo: 'LHR' }]);
+    });
+
+    it.each([
+      ['its id, after a rename', { id: IMMICH_REPOSITORY.id, full_name: 'immich-app/renamed' }],
+      ['its name, in any case, when the payload has no id', { full_name: 'Immich-App/Immich' }],
+    ])('finds the project by %s', async (_, repository) => {
+      await publishRelease({ id: 10, tag_name: 'v1.130.0', published_at: '2025-04-01T00:00:00Z' }, { repository });
+
+      expect(await fetchVersion()).toMatchObject({ version: 'v1.130.0' });
+    });
+
+    it("stores a release under the project whose repository sent it, never Immich's", async () => {
+      const response = await publishRelease(
+        { id: 11, tag_name: 'v9.0.0-beta.1', published_at: '2025-04-01T00:00:00Z', prerelease: true },
+        { repository: { id: 7, full_name: 'futo-org/notes' }, handler: withNotes },
+      );
+
+      expect(await response.json()).toEqual({ success: true });
+      expect(await storedReleases('notes')).toEqual([expect.objectContaining({ tag: 'v9.0.0-beta.1' })]);
+      expect(await storedTags()).not.toContain('v9.0.0-beta.1');
+    });
+
+    it("goes by the repository's id when its name is another project's", async () => {
+      await publishRelease(
+        { id: 13, tag_name: 'v9.0.0', published_at: '2025-04-01T00:00:00Z' },
+        { repository: { id: 7, full_name: 'immich-app/immich' }, handler: withNotes },
+      );
+
+      expect(await storedReleases('notes')).toEqual([expect.objectContaining({ tag: 'v9.0.0' })]);
+      expect(await storedTags()).not.toContain('v9.0.0');
+    });
+
+    it('stores a release under every project on the repository whose pattern takes it', async () => {
+      const [desktop, mobile] = loadProjects({
+        projects: ['desktop', 'mobile'].map((id) => ({
+          id,
+          name: id,
+          source: { type: 'github-releases', repo: 'futo-org/app', repoId: 8 },
+          tags: { pattern: String.raw`^${id}-v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
+          channels: { stable: [] },
+          defaultChannel: 'stable',
+          analytics: { clientIdentity: false },
+          examples: { [`${id}-v1.0.0`]: { version: '1.0.0', channels: ['stable'] } },
+        })),
+      });
+      const handler = createWorker({ projects: [...projects, desktop, mobile] });
+      const repository = { id: 8, full_name: 'futo-org/app' };
+
+      await publishRelease({ id: 12, tag_name: 'mobile-v2.0.0', published_at: '' }, { repository, handler });
+
+      expect(await storedReleases('mobile')).toEqual([expect.objectContaining({ tag: 'mobile-v2.0.0' })]);
+      expect(await storedReleases('desktop')).toEqual([]);
     });
   });
 
@@ -756,6 +667,162 @@ describe('Version Worker', () => {
     });
   });
 
+  describe('GET /v1/projects/{id}/version', () => {
+    const JSON_HEADERS = { 'access-control-allow-origin': '*', 'content-type': 'application/json' };
+    const CACHED_JSON_HEADERS = { ...JSON_HEADERS, 'cache-control': 'public, max-age=300' };
+
+    beforeEach(async () => {
+      await insertRelease({ id: 20, tag_name: 'v1.121.0-rc.1', published_at: '2025-03-15T00:00:00Z' });
+      await insertRelease({ id: 1, tag_name: 'v1.0.0', published_at: '2025-01-01T00:00:00Z' }, 'notes');
+      await insertRelease({ id: 2, tag_name: 'v1.1.0-beta.1', published_at: '2025-02-01T00:00:00Z' }, 'notes');
+    });
+
+    it.each([
+      ['', 'stable', '1.120.0', 'v1.120.0', '2025-03-01T00:00:00Z'],
+      ['?channel=stable', 'stable', '1.120.0', 'v1.120.0', '2025-03-01T00:00:00Z'],
+      ['?channel=rc', 'rc', '1.121.0-rc.1', 'v1.121.0-rc.1', '2025-03-15T00:00:00Z'],
+    ])("serves Immich's newest release for %j", async (query, channel, version, tag, published) => {
+      expect(await get(`/v1/projects/immich/version${query}`)).toEqual({
+        status: 200,
+        headers: CACHED_JSON_HEADERS,
+        body: `{"project":"immich","channel":"${channel}","version":"${version}","tag":"${tag}","published_at":"${published}"}`,
+      });
+    });
+
+    it("defaults to the project's own default channel", async () => {
+      expect(await getJson('/v1/projects/notes/version')).toEqual({
+        project: 'notes',
+        channel: 'beta',
+        version: '1.1.0-beta.1',
+        tag: 'v1.1.0-beta.1',
+        published_at: '2025-02-01T00:00:00Z',
+      });
+      expect(await getJson('/v1/projects/notes/version?channel=stable')).toMatchObject({
+        channel: 'stable',
+        tag: 'v1.0.0',
+      });
+    });
+
+    it("serves the registry's projects through the worker's own entrypoint", async () => {
+      const response = await exports.default.fetch('https://example.com/v1/projects/immich/version');
+      expect(await response.json()).toMatchObject({ project: 'immich', tag: 'v1.120.0' });
+      const unregistered = await exports.default.fetch('https://example.com/v1/projects/notes/version');
+      expect(unregistered.status).toBe(404);
+    });
+
+    it("lists the project's channels for one it doesn't have, and lets nothing cache the error", async () => {
+      expect(await get('/v1/projects/notes/version?channel=rc')).toEqual({
+        status: 400,
+        headers: JSON_HEADERS,
+        body: '{"error":"Invalid release channel","channels":["stable","beta"]}',
+      });
+      expect(await get('/v1/projects/immich/version?channel=__proto__')).toMatchObject({
+        status: 400,
+        body: '{"error":"Invalid release channel","channels":["stable","rc"]}',
+      });
+    });
+
+    it.each(['unknown', 'Immich', '__proto__', 'constructor'])('answers the unregistered %j with 404', async (id) => {
+      expect(await get(`/v1/projects/${id}/version`)).toEqual({
+        status: 404,
+        headers: JSON_HEADERS,
+        body: '{"error":"Unknown project"}',
+      });
+    });
+
+    it('answers 404 when the channel has no release', async () => {
+      await clearReleases();
+      expect(await get('/v1/projects/immich/version')).toEqual({
+        status: 404,
+        headers: JSON_HEADERS,
+        body: '{"error":"No releases found"}',
+      });
+    });
+
+    it.each(['POST', 'PUT', 'DELETE'])('answers %s with 405 and the methods it allows', async (method) => {
+      expect(await get('/v1/projects/immich/version', { method })).toEqual({
+        status: 405,
+        headers: { ...JSON_HEADERS, allow: 'GET, HEAD' },
+        body: '{"error":"Method Not Allowed"}',
+      });
+    });
+
+    it('answers HEAD with the headers of a GET and no body', async () => {
+      expect(await get('/v1/projects/immich/version', { method: 'HEAD' })).toEqual({
+        status: 200,
+        headers: CACHED_JSON_HEADERS,
+        body: '',
+      });
+      expect(await get('/v1/projects/unknown/version', { method: 'HEAD' })).toMatchObject({ status: 404, body: '' });
+    });
+
+    it('answers HEAD without a body when the route fails', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const broken = {
+        prepare: () => {
+          throw new Error('D1 is down');
+        },
+      } as unknown as D1Database;
+      const ctx = { waitUntil: () => {}, passThroughOnException: () => {}, props: {} } as unknown as ExecutionContext;
+      const fail = (method: string) =>
+        worker.fetch(
+          new Request('https://example.com/v1/projects/immich/version', { method }),
+          { ...env, VERSION_DB: broken },
+          ctx,
+        );
+
+      const head = await fail('HEAD');
+      expect(head.status).toBe(500);
+      expect(await head.text()).toBe('');
+      const get = await fail('GET');
+      expect(get.status).toBe(500);
+      expect(await get.json()).toEqual({ error: 'Internal Server Error' });
+    });
+
+    it.each([
+      '/v1/projects/immich/version/',
+      '/v1/projects/immich',
+      '/v1/projects//version',
+      '/v1/projects/a/b/version',
+    ])('leaves %s to the 404 for unknown routes', async (path) => {
+      expect(await get(path)).toMatchObject({ status: 404, body: '{"error":"Not Found"}' });
+    });
+
+    it('shares the memory cache with /version', async () => {
+      await get('/version');
+      await clearReleases();
+
+      expect(await get('/v1/projects/immich/version')).toMatchObject({ status: 200 });
+    });
+
+    it("tags a project's request with its id and the colo, and its client only if the project allows", async () => {
+      const client = { 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': 'notes/1.0.0' };
+      const immichSeries = seriesTags(
+        await loggedLines(() =>
+          exports.default.fetch('https://example.com/v1/projects/immich/version', { ...EDGE, headers: client }),
+        ),
+      );
+      const notesSeries = seriesTags(
+        await loggedLines(() => get('/v1/projects/notes/version', { ...EDGE, headers: client })),
+      );
+
+      expect(immichSeries.version_version_request).toEqual([
+        {
+          version_project: 'immich',
+          colo: 'LHR',
+          client_ip: '192.0.2.1',
+          user_agent: 'notes/1.0.0',
+          continent: 'EU',
+          asOrg: 'Example AS',
+        },
+      ]);
+      expect(immichSeries.version_http_response).toEqual([
+        { method: 'GET', path: '/v1/projects/:project/version', status: '200', colo: 'LHR' },
+      ]);
+      expect(notesSeries.version_version_request).toEqual([{ version_project: 'notes', colo: 'LHR' }]);
+    });
+  });
+
   describe('Unknown routes', () => {
     it('returns 404 for unknown paths', async () => {
       const response = await exports.default.fetch('https://example.com/unknown');
@@ -781,6 +848,13 @@ describe('Version Worker', () => {
       const line = await httpResponseLine('https://example.com/changelog?version=v1.100.0');
       expect(line).toContain(',path=/changelog,');
       expect(line).toContain(',status=404');
+    });
+
+    it('tags the per-project route by its template, whatever the id', async () => {
+      const line = await httpResponseLine('https://example.com/v1/projects/no-such-project/version');
+      expect(line).toContain(',path=/v1/projects/:project/version,');
+      expect(line).toContain(',status=404');
+      expect(line).not.toContain('no-such-project');
     });
 
     it('buckets an unknown path as other', async () => {
@@ -870,7 +944,10 @@ describe('Version Worker', () => {
 });
 
 describe('Cron sync', () => {
-  const GITHUB_RELEASES = 'https://api.github.com/repos/immich-app/immich/releases';
+  // immich-app/immich, by its id.
+  const GITHUB_RELEASES = 'https://api.github.com/repositories/455229168/releases';
+  const FULL = `${GITHUB_RELEASES}?per_page=100&page=1`;
+  const RECENT = `${GITHUB_RELEASES}?per_page=20`;
   let githubReleases: Record<string, unknown>[];
   let requested: string[];
 
@@ -882,10 +959,13 @@ describe('Cron sync', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const { href } = new URL(new Request(input, init).url);
       requested.push(href);
-      const body = {
-        [`${GITHUB_RELEASES}/latest`]: githubReleases.find((release) => !release.prerelease),
-        [`${GITHUB_RELEASES}?per_page=100&page=1`]: githubReleases,
-      }[href];
+      const body = { [FULL]: githubReleases, [RECENT]: githubReleases.slice(0, 20) }[href];
+      // One release, by its id: the listed one, or a 404.
+      const releaseId = href.startsWith(`${GITHUB_RELEASES}/`) ? href.slice(GITHUB_RELEASES.length + 1) : undefined;
+      if (releaseId !== undefined) {
+        const listed = githubReleases.find(({ id }) => String(id) === releaseId);
+        return Promise.resolve(listed ? Response.json(listed) : new Response(null, { status: 404 }));
+      }
       return body === undefined
         ? Promise.reject(new Error(`unexpected fetch: ${href}`))
         : Promise.resolve(Response.json(body));
@@ -906,7 +986,7 @@ describe('Cron sync', () => {
 
     await runCron('*/30 * * * *');
 
-    expect(requested).toEqual([`${GITHUB_RELEASES}/latest`, `${GITHUB_RELEASES}?per_page=100&page=1`]);
+    expect(requested).toEqual([FULL]);
     expect(await storedReleases()).toEqual([
       expect.objectContaining({ tag: 'v1.100.0', published_at: '2025-01-01T00:00:00Z', source_id: '1' }),
       expect.objectContaining({ tag: 'v1.110.0', published_at: '2025-02-01T00:00:00Z', source_id: '2' }),
@@ -916,35 +996,73 @@ describe('Cron sync', () => {
     expect(await fetchVersion()).toEqual({ version: 'v1.120.0', published_at: '2025-03-01T00:00:00Z' });
   });
 
-  it('only asks GitHub for its latest release once that is stored, and writes nothing', async () => {
+  it('only lists the newest releases once a full sync has run, and writes what is new', async () => {
     await runCron('*/30 * * * *');
-    const before = await storedReleases();
+    await env.VERSION_DB.exec("UPDATE project_releases SET synced_at = 'before'");
+    githubReleases.unshift({
+      id: 4,
+      tag_name: 'v1.121.0-rc.1',
+      published_at: '2025-03-15T00:00:00Z',
+      prerelease: true,
+    });
     requested = [];
 
     await runCron('*/30 * * * *');
 
-    expect(requested).toEqual([`${GITHUB_RELEASES}/latest`]);
-    expect(await storedReleases()).toEqual(before);
+    expect(requested).toEqual([RECENT]);
+    const rewritten = await storedReleases();
+    expect(rewritten.filter(({ synced_at }) => synced_at !== 'before')).toEqual([
+      expect.objectContaining({ tag: 'v1.121.0-rc.1', source_id: '4', forge_prerelease: 1 }),
+    ]);
+    expect(await fetchVersion('rc')).toMatchObject({ version: 'v1.121.0-rc.1' });
+  });
+
+  it('reports what is stored after a sync, with a retagged release only under its new tag', async () => {
+    await runCron('*/30 * * * *');
+    // v1.120.0 was tagged by mistake, and GitHub's release now says v1.115.0.
+    githubReleases[0] = { ...githubReleases[0], tag_name: 'v1.115.0' };
+
+    const series = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+
+    expect(await storedTags()).toEqual(['v1.100.0', 'v1.110.0', 'v1.115.0']);
+    expect(series.version_latest_version).toEqual([
+      { version_project: 'immich', version: '1.115.0', user_agent: 'immich-server/1.115.0' },
+    ]);
+  });
+
+  it('keeps fetching everything until a full sync succeeds, even after a webhook stored the latest release', async () => {
+    await publishRelease(githubReleases[0]);
+
+    await runCron('*/30 * * * *');
+
+    expect(requested).toEqual([FULL]);
+    expect(await storedReleases()).toHaveLength(3);
+    expect(await fullSyncedAt()).not.toBeNull();
   });
 
   it("tags the sync's series with the project, and the run's heartbeat with none", async () => {
     const series = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
 
+    const immich = { version_project: 'immich' };
     expect(series).toEqual({
-      version_github_fetch_latest: [{ version_project: 'immich' }],
-      version_github_fetch_all: [{ version_project: 'immich' }],
-      version_d1_bulk_upsert: [{ version_project: 'immich' }],
-      version_cron_releases_synced: [{ version_project: 'immich' }],
-      version_cron_sync: [{}],
-      version_d1_release_count: [{ version_project: 'immich' }],
-      version_latest_version: [{ version_project: 'immich', version: '1.120.0', user_agent: 'immich-server/1.120.0' }],
+      // The heartbeat, then the run's duration.
+      version_cron_sync: [{}, {}],
+      version_project_sync: [immich],
+      version_source_fetch_all: [{ ...immich, source: 'github-releases' }],
+      version_d1_bulk_upsert: [immich],
+      version_releases_written: [{ ...immich, mode: 'full' }],
+      version_releases_deleted: [immich],
+      version_tags_skipped: [immich],
+      version_project_sync_outcome: [immich],
+      version_d1_release_count: [immich],
+      version_latest_version: [{ ...immich, version: '1.120.0', user_agent: 'immich-server/1.120.0' }],
     });
   });
 
   it("writes the webhook's release stats to the crons' series, without the request's geo", async () => {
     githubReleases = [{ id: 4, tag_name: 'v1.130.0', published_at: '2025-04-01T00:00:00Z', prerelease: false }];
 
-    const webhook = seriesTags(await loggedLines(() => publishRelease(githubReleases[0], EDGE)));
+    const webhook = seriesTags(await loggedLines(() => publishRelease(githubReleases[0], { init: EDGE })));
     const cron = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
 
     expect(webhook.version_webhook_received).toEqual([{ event: 'release', colo: 'LHR' }]);
@@ -960,97 +1078,37 @@ describe('Cron sync', () => {
     }
   });
 
-  it('writes only new and changed releases on the nightly full sync', async () => {
+  it('writes only new and changed releases on the nightly full sync, and deletes retracted ones', async () => {
     await runCron('*/30 * * * *');
-    await env.VERSION_DB.exec("UPDATE project_releases SET synced_at = 'before'");
+    // A time long past, like any earlier run's: a delete only takes rows written before its checks.
+    await env.VERSION_DB.exec("UPDATE project_releases SET synced_at = '2000-01-01T00:00:00.000Z'");
     githubReleases = [
       { id: 4, tag_name: 'v1.121.0-rc.1', published_at: '2025-03-15T00:00:00Z', prerelease: true },
       { id: 3, tag_name: 'v1.120.0', published_at: '2025-03-01T00:00:00Z', prerelease: false },
-      { id: 2, tag_name: 'v1.110.0', published_at: '2025-02-02T00:00:00Z', prerelease: false },
       { id: 1, tag_name: 'v1.100.0', published_at: '2025-01-01T00:00:00Z', prerelease: true },
       { id: 0, tag_name: 'v1.13.0_20-dev', published_at: '2023-01-01T00:00:00Z', prerelease: false },
     ];
+    requested = [];
 
     await runCron('0 3 * * *');
 
+    // GitHub confirms that v1.110.0 is gone.
+    expect(requested).toEqual([FULL, `${GITHUB_RELEASES}/2`]);
     const stored = await storedReleases();
     expect(
       stored.map(({ tag, published_at, forge_prerelease, synced_at }) => ({
         tag,
         published_at,
         forge_prerelease,
-        rewritten: synced_at !== 'before',
+        rewritten: synced_at !== '2000-01-01T00:00:00.000Z',
       })),
     ).toEqual([
-      // Only GitHub's prerelease flag changed.
+      // Only GitHub's prerelease flag changed. v1.110.0 is no longer listed.
       { tag: 'v1.100.0', published_at: '2025-01-01T00:00:00Z', forge_prerelease: 1, rewritten: true },
-      { tag: 'v1.110.0', published_at: '2025-02-02T00:00:00Z', forge_prerelease: 0, rewritten: true },
       { tag: 'v1.120.0', published_at: '2025-03-01T00:00:00Z', forge_prerelease: 0, rewritten: false },
       { tag: 'v1.121.0-rc.1', published_at: '2025-03-15T00:00:00Z', forge_prerelease: 1, rewritten: true },
     ]);
     expect(await fetchVersion('rc')).toMatchObject({ version: 'v1.121.0-rc.1' });
-  });
-});
-
-describe('GitHubRepository', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('keeps pre-releases but drops drafts when syncing from GitHub', async () => {
-    const githubReleases = [
-      { id: 1, tag_name: 'v1.120.0', name: 'v1.120.0', url: '', body: '', created_at: '', published_at: '' },
-      {
-        id: 2,
-        tag_name: 'v1.121.0-rc.1',
-        name: 'v1.121.0-rc.1',
-        url: '',
-        body: '',
-        created_at: '',
-        published_at: '',
-        prerelease: true,
-      },
-      {
-        id: 3,
-        tag_name: 'v1.122.0',
-        name: 'v1.122.0',
-        url: '',
-        body: '',
-        created_at: '',
-        published_at: '',
-        draft: true,
-      },
-    ];
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-      const url = new URL(new Request(input, init).url);
-      return url.origin === 'https://api.github.com' && url.pathname === '/repos/immich-app/immich/releases'
-        ? Promise.resolve(Response.json(githubReleases))
-        : Promise.reject(new Error(`unexpected fetch: ${url.href}`));
-    });
-
-    const releases = await new GitHubRepository().fetchReleases();
-    const tags = releases.map((r) => r.tag_name);
-
-    expect(tags).toContain('v1.121.0-rc.1'); // pre-release retained for the rc channel
-    expect(tags).toContain('v1.120.0');
-    expect(tags).not.toContain('v1.122.0'); // draft still dropped
-  });
-
-  it("keeps GitHub's prerelease flag and maps a release to a stored row", async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      Response.json([
-        { id: 2, tag_name: 'v1.121.0-rc.1', published_at: '2025-03-15T00:00:00Z', prerelease: true },
-        { id: 1, tag_name: 'v1.120.0', published_at: '2025-03-01T00:00:00Z' },
-      ]),
-    );
-
-    const releases = await new GitHubRepository().fetchReleases();
-
-    expect(releases.map((release) => toProjectRelease(release))).toEqual([
-      { tag: 'v1.121.0-rc.1', published_at: '2025-03-15T00:00:00Z', source_id: '2', forge_prerelease: true },
-      { tag: 'v1.120.0', published_at: '2025-03-01T00:00:00Z', source_id: '1', forge_prerelease: false },
-    ]);
   });
 });
 
