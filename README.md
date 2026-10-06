@@ -35,3 +35,7 @@ ENVIRONMENT=dev TF_VAR_stage= mise run tg plan
 ```
 
 The history of this worker was carried over from immich-app/services. Commit messages that reference PRs from before the move link to that repository.
+
+## Observability
+
+Metrics go to FUTO's o11y stack under `project=version`. The Grafana dashboards, the alerts and the `version:*` recording rules are in [`o11y/`](o11y/README.md), published from `main` as a signed OCI bundle that o11y pulls.

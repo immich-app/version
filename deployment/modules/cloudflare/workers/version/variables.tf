@@ -14,7 +14,7 @@ variable "migrations_dir" {
 }
 
 variable "o11y_vmauth_token" {
-  description = "Bearer token for the o11y vmauth gateway. Metrics are only shipped when this is set"
+  description = "Bearer token for the o11y vmauth gateway. Required for dev main and prod, which always ship metrics; unused by PR stages, which never do"
   type        = string
   sensitive   = true
   default     = ""

@@ -3,7 +3,13 @@ import { DeferredRepository } from './deferred.js';
 import { DocsService } from './docs-service.js';
 import { createInstallationToken } from './github-auth.js';
 import { GitHubRepository } from './github-repository.js';
-import { CloudflareMetricsRepository, HeaderMetricsProvider, InfluxMetricsProvider, Metric } from './metrics.js';
+import {
+  CloudflareMetricsRepository,
+  getMetricsIdentity,
+  HeaderMetricsProvider,
+  InfluxMetricsProvider,
+  Metric,
+} from './metrics.js';
 import { ReleaseRepository } from './release-repository.js';
 import type { GitHubRelease } from './types.js';
 import { VersionService } from './version-service.js';
@@ -21,6 +27,24 @@ function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, 
   });
 }
 
+// http_response's method and path tags take only these values, anything else
+// becomes 'other': raw values would let any client (or a scanner probing
+// /wp-login.php) mint a new series per request in the shared o11y store.
+const METRIC_ROUTES = new Set(['/', '/health', '/version', '/v1/docs/versions', '/changelog', '/webhook']);
+const METRIC_METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS']);
+
+function httpResponseMetric(request: Request, url: URL, status: number) {
+  return Metric.create('http_response')
+    .addTag('method', METRIC_METHODS.has(request.method) ? request.method : 'other')
+    .addTag('path', METRIC_ROUTES.has(url.pathname) ? url.pathname : 'other')
+    .addTag('status', String(status))
+    .intField('count', 1);
+}
+
+function createInfluxProvider(env: Env) {
+  return new InfluxMetricsProvider(env.METRICS_URL ?? '', env.METRICS_TOKEN ?? '', getMetricsIdentity(env));
+}
+
 function errorResponse(error: string, status: number, extraHeaders?: Record<string, string>) {
   return jsonResponse({ error }, status, extraHeaders);
 }
@@ -29,18 +53,9 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const deferredRepository = new DeferredRepository(ctx);
     const headerProvider = new HeaderMetricsProvider();
-    const influxProvider = new InfluxMetricsProvider(
-      env.METRICS_URL ?? '',
-      env.METRICS_TOKEN ?? '',
-      env.ENVIRONMENT ?? '',
-    );
+    const influxProvider = createInfluxProvider(env);
     deferredRepository.defer(() => influxProvider.flush());
-    const metrics = new CloudflareMetricsRepository(
-      'version',
-      request,
-      [influxProvider, headerProvider],
-      env.ENVIRONMENT ?? '',
-    );
+    const metrics = new CloudflareMetricsRepository('version', request, [influxProvider, headerProvider]);
 
     const releaseRepository = new ReleaseRepository(env.VERSION_DB);
     const versionService = new VersionService(releaseRepository, metrics);
@@ -214,39 +229,23 @@ export default {
         }
       })();
 
-      metrics.push(
-        Metric.create('http_response')
-          .addTag('method', request.method)
-          .addTag('path', url.pathname)
-          .addTag('status', String(response.status))
-          .intField('count', 1),
-      );
+      metrics.push(httpResponseMetric(request, url, response.status));
 
       response.headers.set('Server-Timing', headerProvider.getTimingHeader());
       deferredRepository.runDeferred();
       return response;
     } catch (error) {
       console.error(error);
-      metrics.push(
-        Metric.create('http_response')
-          .addTag('method', request.method)
-          .addTag('path', url.pathname)
-          .addTag('status', '500')
-          .intField('count', 1),
-      );
+      metrics.push(httpResponseMetric(request, url, 500));
       deferredRepository.runDeferred();
       return errorResponse('Internal Server Error', 500);
     }
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    const influxProvider = new InfluxMetricsProvider(
-      env.METRICS_URL ?? '',
-      env.METRICS_TOKEN ?? '',
-      env.ENVIRONMENT ?? '',
-    );
+    const influxProvider = createInfluxProvider(env);
     const request = new Request('https://localhost/cron');
-    const metrics = new CloudflareMetricsRepository('version', request, [influxProvider], env.ENVIRONMENT ?? '');
+    const metrics = new CloudflareMetricsRepository('version', request, [influxProvider]);
 
     let githubToken: string | undefined;
     if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_INSTALLATION_ID) {

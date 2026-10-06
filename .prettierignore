@@ -9,3 +9,4 @@ build/
 coverage/
 deployment/
 pnpm-lock.yaml
+o11y/dashboards/

@@ -10,6 +10,10 @@ declare namespace Cloudflare {
     VERSION_DB: D1Database;
     METRICS_URL?: string;
     METRICS_TOKEN?: string;
+    METRICS_PROJECT?: string;
+    METRICS_CLUSTER?: string;
+    METRICS_PROVIDER?: string;
+    METRICS_REGION?: string;
     ENVIRONMENT: string;
     GITHUB_APP_ID?: string;
     GITHUB_APP_PRIVATE_KEY?: string;

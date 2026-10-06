@@ -4,10 +4,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Redeploys dev and prod from main, e.g. to pick up a rotated o11y token.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only a superseded PR run is cancelled, so a main deploy is never cut off mid-apply.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -45,8 +48,10 @@ jobs:
 
   deploy-dev:
     name: Deploy (dev)
-    # Fork PRs get no secrets, so they can't deploy a preview.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Fork PRs get no secrets, so they can't deploy a preview. A dispatch from
+    # any branch other than main only builds: it would otherwise deploy that
+    # branch over dev main.
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     needs: [build]
     # Shared with the PR's teardown in destroy.yml, so a teardown never overlaps this deploy.
@@ -126,7 +131,7 @@ jobs:
             echo "body<<COMMENT_EOF"
             echo "$BODY"
             echo "COMMENT_EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Comment preview URL
         if: ${{ github.event_name == 'pull_request' && steps.pr.outputs.state == 'open' }}
