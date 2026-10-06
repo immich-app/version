@@ -24,7 +24,9 @@ spec:
   groups:
     # Per-5m markers computed over raw data. Changed: devtools also counted
     # /changelog requests, which the worker no longer serves, so
-    # server_seen and server_version_seen now match their _vreq twins.
+    # server_seen and server_version_seen now match their _vreq twins. The
+    # memory cache rules now keep version_project, and requests_by_project is
+    # new, so the overview can filter them by project.
     - name: version-worker.base
       interval: 5m
       rules:
@@ -51,19 +53,24 @@ spec:
             sum by (colo) (count_over_time(version_handle_request_invocation{colo!=""}[5m]))
         - record: version:memory_cache_hit:count5m
           expr: |-
-            sum(count_over_time(version_memory_cache_hit_count[5m]))
+            sum by (version_project) (count_over_time(version_memory_cache_hit_count[5m]))
         - record: version:memory_cache_stale:count5m
           expr: |-
-            sum(count_over_time(version_memory_cache_stale_count[5m]))
+            sum by (version_project) (count_over_time(version_memory_cache_stale_count[5m]))
         - record: version:memory_cache_miss:count5m
           expr: |-
-            sum(count_over_time(version_memory_cache_miss_count[5m]))
+            sum by (version_project) (count_over_time(version_memory_cache_miss_count[5m]))
         - record: version:requests_immich:count5m
           expr: |-
             (sum(count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m])) or vector(0))
         - record: version:requests_other:count5m
           expr: |-
             (sum(count_over_time(version_version_request_invocation{user_agent!~"immich-server/.*",user_agent!=""}[5m])) or vector(0))
+        # A lower bound: requests that land on one series within 20s count once
+        # (o11y/README.md).
+        - record: version:requests_by_project:count5m
+          expr: |-
+            sum by (version_project) (count_over_time(version_version_request_invocation{version_project!=""}[5m]))
     # Derived from base rule series only (never raw). eval_offset ensures the
     # async remote-write of the base group has landed before evaluation.
     - name: version-worker.derived

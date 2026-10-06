@@ -146,7 +146,7 @@
       "pluginVersion": "10.4.3",
       "targets": [
         {
-          "expr": "(sum(sum_over_time(version:memory_cache_hit:count5m[24h])) + sum(sum_over_time(version:memory_cache_stale:count5m[24h]))) / (sum(sum_over_time(version:memory_cache_hit:count5m[24h])) + sum(sum_over_time(version:memory_cache_stale:count5m[24h])) + sum(sum_over_time(version:memory_cache_miss:count5m[24h])))",
+          "expr": "(sum(sum_over_time(version:memory_cache_hit:count5m{version_project=~\"$project\"}[24h])) + sum(sum_over_time(version:memory_cache_stale:count5m{version_project=~\"$project\"}[24h]))) / (sum(sum_over_time(version:memory_cache_hit:count5m{version_project=~\"$project\"}[24h])) + sum(sum_over_time(version:memory_cache_stale:count5m{version_project=~\"$project\"}[24h])) + sum(sum_over_time(version:memory_cache_miss:count5m{version_project=~\"$project\"}[24h])))",
           "refId": "A",
           "instant": true,
           "range": false
@@ -209,7 +209,7 @@
       "pluginVersion": "10.4.3",
       "targets": [
         {
-          "expr": "max(last_over_time(version_d1_release_count_count[3h]))",
+          "expr": "sum(max by (version_project) (last_over_time(version_d1_release_count_count{version_project=~\"$project\",version_project!=\"\"}[3h])))",
           "refId": "A",
           "instant": true,
           "range": false
@@ -217,7 +217,8 @@
       ],
       "title": "Releases Stored",
       "type": "stat",
-      "maxDataPoints": 300
+      "maxDataPoints": 300,
+      "description": "Summed over the selected projects: each project's latest count from its sync or a webhook in the last 3h."
     },
     {
       "datasource": {
@@ -561,31 +562,31 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"cdn\"}[$__interval]))",
+          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"cdn\",version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "CDN hit (/v1/docs/versions)",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"\"}[$__interval]))",
+          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"\",version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "CDN miss (/v1/docs/versions)",
           "refId": "B",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_memory_cache_hit_count[$__interval]))",
+          "expr": "sum(count_over_time(version_memory_cache_hit_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "memory hit (/version)",
           "refId": "C",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_memory_cache_stale_count[$__interval]))",
+          "expr": "sum(count_over_time(version_memory_cache_stale_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "memory stale (/version)",
           "refId": "D",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_memory_cache_miss_count[$__interval]))",
+          "expr": "sum(count_over_time(version_memory_cache_miss_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "memory miss (/version)",
           "refId": "E",
           "interval": "5m"
@@ -658,7 +659,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 13
       },
@@ -687,6 +688,99 @@
       "type": "timeseries",
       "maxDataPoints": 300,
       "description": "Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (version_project) (sum_over_time(version:requests_by_project:count5m{version_project=~\"$project\"}[$__interval]))",
+          "legendFormat": "{{version_project}}",
+          "refId": "A",
+          "interval": "5m"
+        }
+      ],
+      "title": "Requests by Project",
+      "type": "timeseries",
+      "maxDataPoints": 300,
+      "description": "Version requests per project, from the version:requests_by_project:count5m rule. Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once."
     },
     {
       "collapsed": false,
@@ -784,19 +878,19 @@
       },
       "targets": [
         {
-          "expr": "quantile(0.95, last_over_time(version_d1_get_latest_duration[$__interval]))",
+          "expr": "quantile(0.95, last_over_time(version_d1_get_latest_duration{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "get_latest p95",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "quantile(0.95, last_over_time(version_d1_bulk_upsert_duration[$__interval]))",
+          "expr": "quantile(0.95, last_over_time(version_d1_bulk_upsert_duration{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "bulk_upsert p95",
           "refId": "B",
           "interval": "5m"
         },
         {
-          "expr": "quantile(0.95, last_over_time(version_webhook_upsert_duration[$__interval]))",
+          "expr": "quantile(0.95, last_over_time(version_webhook_upsert_duration{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "webhook_upsert p95",
           "refId": "C",
           "interval": "5m"
@@ -887,13 +981,13 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time(version_d1_get_latest_invocation[$__interval]))",
+          "expr": "sum(count_over_time(version_d1_get_latest_invocation{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "get_latest",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_d1_bulk_upsert_invocation[$__interval]))",
+          "expr": "sum(count_over_time(version_d1_bulk_upsert_invocation{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "bulk_upsert",
           "refId": "B",
           "interval": "5m"
@@ -983,13 +1077,13 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time(version_d1_get_latest_errors[$__interval])) or vector(0)",
+          "expr": "sum(count_over_time(version_d1_get_latest_errors{version_project=~\"$project\"}[$__interval])) or vector(0)",
           "legendFormat": "get_latest errors",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_d1_bulk_upsert_errors[$__interval])) or vector(0)",
+          "expr": "sum(count_over_time(version_d1_bulk_upsert_errors{version_project=~\"$project\"}[$__interval])) or vector(0)",
           "legendFormat": "bulk_upsert errors",
           "refId": "B",
           "interval": "5m"
@@ -1081,8 +1175,8 @@
       },
       "targets": [
         {
-          "expr": "max(last_over_time(version_d1_release_count_count[$__interval]))",
-          "legendFormat": "releases",
+          "expr": "max by (version_project) (last_over_time(version_d1_release_count_count{version_project=~\"$project\",version_project!=\"\"}[$__interval]))",
+          "legendFormat": "{{version_project}}",
           "refId": "A",
           "interval": "5m"
         }
@@ -1191,7 +1285,7 @@
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_webhook_release_upserted_count[$__interval]))",
+          "expr": "sum(count_over_time(version_webhook_release_upserted_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "upserted",
           "refId": "B",
           "interval": "5m"
@@ -1199,7 +1293,8 @@
       ],
       "title": "Webhook Events",
       "type": "timeseries",
-      "maxDataPoints": 300
+      "maxDataPoints": 300,
+      "description": "Received counts deliveries before their payload names a project, so only upserted follows the project filter."
     },
     {
       "datasource": {
@@ -1288,13 +1383,13 @@
           "interval": "5m"
         },
         {
-          "expr": "sum(sum_over_time(version_cron_releases_synced_count[$__interval]))",
+          "expr": "sum(sum_over_time(version_cron_releases_synced_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "releases synced",
           "refId": "B",
           "interval": "5m"
         },
         {
-          "expr": "sum(sum_over_time(version_cron_full_sync_count[$__interval]))",
+          "expr": "sum(sum_over_time(version_cron_full_sync_count{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "nightly full sync",
           "refId": "C",
           "interval": "5m"
@@ -1302,7 +1397,8 @@
       ],
       "title": "Cron Sync",
       "type": "timeseries",
-      "maxDataPoints": 300
+      "maxDataPoints": 300,
+      "description": "One cron run syncs every project, so cron runs ignore the project filter; releases synced and nightly full sync follow it."
     },
     {
       "datasource": {
@@ -1387,13 +1483,13 @@
       },
       "targets": [
         {
-          "expr": "quantile(0.95, last_over_time(version_github_fetch_latest_duration[$__interval]))",
+          "expr": "quantile(0.95, last_over_time(version_github_fetch_latest_duration{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "fetch latest p95",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "quantile(0.95, last_over_time(version_github_fetch_all_duration[$__interval]))",
+          "expr": "quantile(0.95, last_over_time(version_github_fetch_all_duration{version_project=~\"$project\"}[$__interval]))",
           "legendFormat": "fetch all p95",
           "refId": "B",
           "interval": "5m"
@@ -1457,21 +1553,21 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time(version_webhook_upsert_invocation[24h]))",
+          "expr": "sum(count_over_time(version_webhook_upsert_invocation{version_project=~\"$project\"}[24h]))",
           "legendFormat": "webhook",
           "refId": "A",
           "instant": true,
           "range": false
         },
         {
-          "expr": "sum(sum_over_time(version_cron_releases_synced_count[24h]))",
+          "expr": "sum(sum_over_time(version_cron_releases_synced_count{version_project=~\"$project\"}[24h]))",
           "legendFormat": "cron (new release)",
           "refId": "B",
           "instant": true,
           "range": false
         },
         {
-          "expr": "sum(sum_over_time(version_cron_full_sync_count[24h]))",
+          "expr": "sum(sum_over_time(version_cron_full_sync_count{version_project=~\"$project\"}[24h]))",
           "legendFormat": "cron (nightly full sync)",
           "refId": "C",
           "instant": true,
@@ -1753,6 +1849,40 @@
         "regex": "/^VictoriaMetrics Fleet$/",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(version_d1_release_count_count{project=\"version\"}, version_project)",
+        "description": "Projects from projects.json, by their version_project label. Panels on the worker as a whole (requests, errors, regions, HTTP, cron runs and received webhooks) ignore it.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Project",
+        "multi": true,
+        "name": "project",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(version_d1_release_count_count{project=\"version\"}, version_project)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },

@@ -93,18 +93,43 @@ async function fetchDocsVersions(): Promise<DocsVersion[]> {
 }
 
 // Tests ship nothing (no METRICS_URL), so InfluxMetricsProvider logs its lines instead.
-async function httpResponseLine(url: string, init?: RequestInit) {
+async function loggedLines(run: () => Promise<unknown>): Promise<string[]> {
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   try {
-    await exports.default.fetch(url, init);
-    const lines = logSpy.mock.calls.flatMap(([body]) => String(body).split('\n'));
-    const line = lines.find((l) => l.startsWith('version_http_response,'));
-    expect(line).toBeDefined();
-    return line!;
+    await run();
+    return logSpy.mock.calls.flatMap(([body]) => String(body).split('\n')).filter((l) => l.startsWith('version_'));
   } finally {
     logSpy.mockRestore();
   }
 }
+
+async function httpResponseLine(url: string, init?: RequestInit) {
+  const lines = await loggedLines(() => exports.default.fetch(url, init));
+  const line = lines.find((l) => l.startsWith('version_http_response,'));
+  expect(line).toBeDefined();
+  return line!;
+}
+
+const IDENTITY_LABELS = new Set(['project', 'env', 'cluster', 'provider', 'region']);
+const unescape = (value: string) => value.replaceAll(/\\(.)/g, '$1');
+
+// Each logged series' own tags, without the identity labels, by measurement.
+function seriesTags(lines: string[]): Record<string, Record<string, string>[]> {
+  const series: Record<string, Record<string, string>[]> = {};
+  for (const line of lines) {
+    // Line protocol escapes spaces, commas and equals signs with a backslash.
+    const [name, ...pairs] = /^(?:\\.|[^\\ ])*/.exec(line)![0].match(/(?:\\.|[^\\,])+/g)!;
+    const tags = pairs
+      .map((pair) => /^((?:\\.|[^\\=])*)=(.*)$/.exec(pair)!)
+      .filter(([, key]) => !IDENTITY_LABELS.has(key))
+      .map(([, key, value]) => [unescape(key), unescape(value)]);
+    (series[name] ??= []).push(Object.fromEntries(tags));
+  }
+  return series;
+}
+
+// A request through LHR, as Cloudflare would describe it.
+const EDGE = { cf: { continent: 'EU', colo: 'LHR', asOrganization: 'Example AS' } } as RequestInit;
 
 async function createWebhookSignature(body: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -121,9 +146,10 @@ async function createWebhookSignature(body: string, secret: string): Promise<str
 
 // Posts a signed `published` release delivery, as GitHub would. The secret is
 // wrangler.toml's GITHUB_WEBHOOK_SECRET.
-async function publishRelease(release: Record<string, unknown>) {
+async function publishRelease(release: Record<string, unknown>, init?: RequestInit) {
   const body = JSON.stringify({ action: 'published', release });
   return await exports.default.fetch('https://example.com/webhook', {
+    ...init,
     method: 'POST',
     body,
     headers: {
@@ -771,6 +797,76 @@ describe('Version Worker', () => {
       expect(line).not.toContain('PROPFIND');
     });
   });
+
+  describe('metric tags', () => {
+    const IMMICH_SERVER = { 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': 'immich-server/v1.120.0' };
+
+    it("tags /version's series with the project and the colo, and only its own with the client", async () => {
+      const series = seriesTags(
+        await loggedLines(() =>
+          exports.default.fetch('https://example.com/version', { ...EDGE, headers: IMMICH_SERVER }),
+        ),
+      );
+
+      const project = { version_project: 'immich', colo: 'LHR' };
+      expect(series).toEqual({
+        version_memory_cache_miss: [project],
+        version_d1_get_latest: [project],
+        version_version_request: [
+          {
+            ...project,
+            client_ip: '192.0.2.1',
+            user_agent: 'immich-server/v1.120.0',
+            continent: 'EU',
+            asOrg: 'Example AS',
+          },
+        ],
+        version_handle_request: [{ continent: 'EU', colo: 'LHR', asOrg: 'Example AS' }],
+        version_http_response: [{ method: 'GET', path: '/version', status: '200', colo: 'LHR' }],
+      });
+    });
+
+    it("tags /v1/docs/versions' series with the project and the colo", async () => {
+      const series = seriesTags(
+        await loggedLines(() => exports.default.fetch('https://example.com/v1/docs/versions', EDGE)),
+      );
+
+      expect(series.version_d1_get_docs_versions).toEqual([{ version_project: 'immich', colo: 'LHR' }]);
+      expect(series.version_docs_versions_request).toEqual([{ version_project: 'immich', colo: 'LHR' }]);
+    });
+
+    // wrangler.toml leaves ENVIRONMENT empty, which turns the CDN cache off, so
+    // this calls the handler directly with it set.
+    it('tags a CDN hit on /v1/docs/versions with the project, the colo and cache=cdn', async () => {
+      const url = 'https://example.com/v1/docs/versions';
+      await caches.default.put(url, new Response('[]', { headers: { 'Cache-Control': 'public, max-age=60' } }));
+      const waiting: Promise<unknown>[] = [];
+      const ctx = {
+        waitUntil: (promise: Promise<unknown>) => {
+          waiting.push(promise);
+        },
+        passThroughOnException: () => {},
+        props: {},
+      } as unknown as ExecutionContext;
+
+      try {
+        const series = seriesTags(
+          await loggedLines(async () => {
+            const response = await worker.fetch(new Request(url, EDGE), { ...env, ENVIRONMENT: 'dev' }, ctx);
+            expect(await response.json()).toEqual([]);
+            await Promise.all(waiting);
+          }),
+        );
+
+        expect(series.version_docs_versions_request).toEqual([
+          { version_project: 'immich', colo: 'LHR', cache: 'cdn' },
+        ]);
+        expect(series.version_d1_get_docs_versions).toBeUndefined();
+      } finally {
+        await caches.default.delete(url);
+      }
+    });
+  });
 });
 
 describe('Cron sync', () => {
@@ -829,6 +925,39 @@ describe('Cron sync', () => {
 
     expect(requested).toEqual([`${GITHUB_RELEASES}/latest`]);
     expect(await storedReleases()).toEqual(before);
+  });
+
+  it("tags the sync's series with the project, and the run's heartbeat with none", async () => {
+    const series = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+
+    expect(series).toEqual({
+      version_github_fetch_latest: [{ version_project: 'immich' }],
+      version_github_fetch_all: [{ version_project: 'immich' }],
+      version_d1_bulk_upsert: [{ version_project: 'immich' }],
+      version_cron_releases_synced: [{ version_project: 'immich' }],
+      version_cron_sync: [{}],
+      version_d1_release_count: [{ version_project: 'immich' }],
+      version_latest_version: [{ version_project: 'immich', version: '1.120.0', user_agent: 'immich-server/1.120.0' }],
+    });
+  });
+
+  it("writes the webhook's release stats to the crons' series, without the request's geo", async () => {
+    githubReleases = [{ id: 4, tag_name: 'v1.130.0', published_at: '2025-04-01T00:00:00Z', prerelease: false }];
+
+    const webhook = seriesTags(await loggedLines(() => publishRelease(githubReleases[0], EDGE)));
+    const cron = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+
+    expect(webhook.version_webhook_received).toEqual([{ event: 'release', colo: 'LHR' }]);
+    expect(webhook.version_webhook_upsert).toEqual([{ version_project: 'immich', colo: 'LHR' }]);
+    expect(webhook.version_webhook_release_upserted).toEqual([
+      { version_project: 'immich', tag: 'v1.130.0', colo: 'LHR' },
+    ]);
+    for (const series of [webhook, cron]) {
+      expect(series.version_d1_release_count).toEqual([{ version_project: 'immich' }]);
+      expect(series.version_latest_version).toEqual([
+        { version_project: 'immich', version: '1.130.0', user_agent: 'immich-server/1.130.0' },
+      ]);
+    }
   });
 
   it('writes only new and changed releases on the nightly full sync', async () => {

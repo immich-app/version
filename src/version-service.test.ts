@@ -1,34 +1,45 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeferredRepository } from './deferred.js';
 import type { IGitHubRepository } from './github-repository.js';
-import { type IMetricsRepository, Metric } from './metrics.js';
-import type { AsyncFn, Operation } from './monitor.js';
+import { CloudflareMetricsRepository, type Metric } from './metrics.js';
 import { legacyProject, loadProjects, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import type { GitHubRelease, ProjectRelease } from './types.js';
 import { changedReleases, versionCaches, VersionService } from './version-service.js';
 
-class FakeMetrics implements IMetricsRepository {
-  pushed: Metric[] = [];
+// A real repository, as on a request through LHR, that keeps every metric
+// pushed through it or any scope of it, so the tags are the ones that ship.
+class RecordingMetrics extends CloudflareMetricsRepository {
+  readonly pushed: Metric[];
 
-  monitorAsyncFunction<T extends AsyncFn>(_operation: Operation, call: T) {
-    return (...args: Parameters<T>) => call(...args) as Promise<Awaited<ReturnType<T>>>;
-  }
-
-  push(metric: Metric): void {
-    this.pushed.push(metric);
+  constructor() {
+    const pushed: Metric[] = [];
+    const recorder = {
+      pushMetric: (metric: Metric) => {
+        pushed.push(metric);
+      },
+      flush: () => {},
+    };
+    super('version', [recorder], { colo: 'LHR' });
+    this.pushed = pushed;
   }
 
   names(): string[] {
-    return this.pushed.map((metric) => metric.name);
+    return this.pushed.map((metric) => metric.name.replace(/^version_/, ''));
   }
 
   find(name: string): Metric | undefined {
-    return this.pushed.find((metric) => metric.name === name);
+    return this.pushed.find((metric) => metric.name === `version_${name}`);
   }
 
   countOf(name: string): number | undefined {
     return this.find(name)?.fields.get('count')?.value;
+  }
+
+  tagsOf(name: string): Record<string, string> {
+    const metric = this.find(name);
+    expect(metric, `${name} was not emitted`).toBeDefined();
+    return Object.fromEntries(metric!.tags);
   }
 }
 
@@ -105,11 +116,11 @@ function createGitHubRepository(overrides: Partial<IGitHubRepository> = {}): IGi
 const cacheFor = (project: Project) => versionCaches.get(project.id).cache;
 
 describe('VersionService', () => {
-  let metrics: FakeMetrics;
+  let metrics: RecordingMetrics;
   let deferred: FakeDeferred;
 
   beforeEach(() => {
-    metrics = new FakeMetrics();
+    metrics = new RecordingMetrics();
     deferred = new FakeDeferred();
     versionCaches.clear();
   });
@@ -136,7 +147,22 @@ describe('VersionService', () => {
       expect(await latest(service, immich, 'rc')).toMatchObject({ tag: 'v1.130.0' });
 
       expect(repository.list).toHaveBeenCalledOnce();
-      expect(metrics.names()).toEqual(['memory_cache_miss', 'memory_cache_hit']);
+      expect(metrics.names()).toEqual(['memory_cache_miss', 'd1_get_latest', 'memory_cache_hit']);
+    });
+
+    it("tags its metrics with the project and the request's colo", async () => {
+      const service = new VersionService(createReleaseRepository({ other: [stored('v1.0.0')] }), metrics);
+
+      await latest(service, other, 'stable');
+      await latest(service, other, 'stable');
+      cacheFor(other).set(new Map());
+      Object.assign(cacheFor(other), { expiresAt: 0 });
+      await latest(service, other, 'stable');
+
+      expect(metrics.names()).toEqual(['memory_cache_miss', 'd1_get_latest', 'memory_cache_hit', 'memory_cache_stale']);
+      for (const metric of metrics.pushed) {
+        expect(Object.fromEntries(metric.tags), metric.name).toEqual({ version_project: 'other', colo: 'LHR' });
+      }
     });
 
     it('caches an empty channel as null, so it is not read again', async () => {
@@ -223,9 +249,33 @@ describe('VersionService', () => {
 
       await service.handleReleasePublished(immich, release);
 
-      expect(metrics.names()).toEqual(['webhook_release_upserted', 'd1_release_count', 'latest_version']);
+      expect(metrics.names()).toEqual([
+        'webhook_upsert',
+        'webhook_release_upserted',
+        'd1_release_count',
+        'latest_version',
+      ]);
       expect(metrics.find('webhook_release_upserted')?.tags.get('tag')).toBe('v1.130.0');
       expect(metrics.countOf('d1_release_count')).toBe(2);
+    });
+
+    it("writes the release stats to the crons' series, without the request's colo", async () => {
+      const service = new VersionService(createReleaseRepository(), metrics);
+
+      await service.handleReleasePublished(immich, release);
+
+      expect(metrics.tagsOf('webhook_upsert')).toEqual({ version_project: 'immich', colo: 'LHR' });
+      expect(metrics.tagsOf('webhook_release_upserted')).toEqual({
+        version_project: 'immich',
+        colo: 'LHR',
+        tag: 'v1.130.0',
+      });
+      expect(metrics.tagsOf('d1_release_count')).toEqual({ version_project: 'immich' });
+      expect(metrics.tagsOf('latest_version')).toEqual({
+        version_project: 'immich',
+        version: '1.130.0',
+        user_agent: 'immich-server/1.130.0',
+      });
     });
 
     it("invalidates only the project's cache and never marks it fully synced", async () => {
@@ -297,6 +347,27 @@ describe('VersionService', () => {
       expect(repository.upsertMany).toHaveBeenCalledWith('immich', [storedRelease]);
     });
 
+    it("tags the sync's metrics with the project", async () => {
+      const repository = createReleaseRepository({ other: [] });
+      const github = createGitHubRepository({
+        fetchLatestRelease: vi.fn(() => Promise.resolve({ ...release, tag_name: 'v1.0.0' })),
+        fetchReleases: vi.fn(() => Promise.resolve([{ ...release, tag_name: 'v1.0.0' }])),
+      });
+      const service = new VersionService(repository, metrics);
+
+      await service.syncFromGitHub(other, github);
+
+      expect(metrics.names()).toEqual([
+        'github_fetch_latest',
+        'github_fetch_all',
+        'd1_bulk_upsert',
+        'cron_releases_synced',
+      ]);
+      for (const name of metrics.names()) {
+        expect(metrics.tagsOf(name)).toMatchObject({ version_project: 'other' });
+      }
+    });
+
     it('returns no sync when GitHub has no latest release', async () => {
       const repository = createReleaseRepository();
       const service = new VersionService(repository, metrics);
@@ -318,6 +389,7 @@ describe('VersionService', () => {
       expect(repository.upsertMany).not.toHaveBeenCalled();
       expect(repository.markFullSynced).toHaveBeenCalledWith('immich');
       expect(metrics.countOf('cron_full_sync')).toBe(1);
+      expect(metrics.tagsOf('cron_full_sync')).toMatchObject({ version_project: 'immich' });
       expect(cacheFor(immich).get()).not.toBeNull();
     });
 
@@ -355,13 +427,11 @@ describe('VersionService', () => {
       await service.emitReleaseStats(immich);
 
       expect(metrics.countOf('d1_release_count')).toBe(2);
-      const metric = metrics.find('latest_version');
-      expect(metric!.tags).toEqual(
-        new Map([
-          ['version', '1.130.0'],
-          ['user_agent', 'immich-server/1.130.0'],
-        ]),
-      );
+      expect(metrics.tagsOf('latest_version')).toEqual({
+        version_project: 'immich',
+        version: '1.130.0',
+        user_agent: 'immich-server/1.130.0',
+      });
     });
 
     it('leaves out the user agent for a project without one', async () => {
@@ -369,7 +439,8 @@ describe('VersionService', () => {
 
       await service.emitReleaseStats(other);
 
-      expect(metrics.find('latest_version')!.tags).toEqual(new Map([['version', '1.0.0']]));
+      expect(metrics.tagsOf('d1_release_count')).toEqual({ version_project: 'other' });
+      expect(metrics.tagsOf('latest_version')).toEqual({ version_project: 'other', version: '1.0.0' });
     });
 
     it('emits only the count when there is no latest release', async () => {
