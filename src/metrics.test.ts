@@ -130,6 +130,36 @@ describe('InfluxMetricsProvider', () => {
     );
   });
 
+  it('ships each flush only the lines pushed since the last, and nothing when none were', async () => {
+    // The first request is still in flight when the second flush starts.
+    let answerFirst: (() => void) | undefined;
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            answerFirst = () => resolve(new Response(null, { status: 204 }));
+          }),
+      )
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const provider = new InfluxMetricsProvider(writeUrl, 'token', identity);
+
+    provider.pushMetric(Metric.create('version_first').intField('count', 1));
+    const first = provider.flush();
+    provider.pushMetric(Metric.create('version_second').intField('count', 2));
+    await provider.flush();
+    answerFirst?.();
+    await first;
+    await provider.flush();
+
+    const bodies = fetchSpy.mock.calls.map(([, init]) => String(init?.body));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatch(/^version_first,/);
+    expect(bodies[0]).not.toContain('version_second');
+    expect(bodies[1]).toMatch(/^version_second,/);
+    expect(bodies[1]).not.toContain('version_first');
+  });
+
   it('still stamps the identity labels over a metric tag that got past the guard', async () => {
     const metric = Metric.create('version_x').intField('count', 1);
     // Metric.addTag refuses these keys; tags is the map underneath it.

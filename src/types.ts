@@ -30,6 +30,17 @@ export interface VersionResponse {
   published_at: string;
 }
 
+// The /v1/projects/{id}/version body.
+export interface ProjectVersionResponse {
+  project: string;
+  channel: string;
+  // The tag pattern's version group, e.g. 3.3.0.
+  version: string;
+  // The raw tag, e.g. v3.3.0.
+  tag: string;
+  published_at: string;
+}
+
 export interface DocsVersion {
   label: string;
   url: string;
