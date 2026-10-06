@@ -359,3 +359,15 @@ function loadExamples(
 // The registry, validated when the worker loads it. CI runs the same checks
 // first (src/projects.test.ts), so a bad entry never reaches a deploy.
 export const projects: readonly Project[] = loadProjects(registry);
+
+function requireProject(id: string): Project {
+  const project = findProject(id);
+  if (!project) {
+    throw new Error(`projects.json must register "${id}"`);
+  }
+  return project;
+}
+
+// The project the legacy routes, the release webhook and the sync crons serve.
+// src/projects.test.ts keeps it on exactly the channels /version accepts.
+export const legacyProject = requireProject(LEGACY_PROJECT_ID);

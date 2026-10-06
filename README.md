@@ -9,7 +9,7 @@ Cloudflare Worker that serves the latest Immich release to servers doing version
 | `POST /webhook`         | GitHub `release` webhook from `immich-app/immich` (HMAC-SHA256 verified)    |
 | `GET /health`           | Health check                                                                |
 
-Releases are stored in D1 and kept in sync by the release webhook and two crons: an incremental sync every 30 minutes and a full sync at 03:00 UTC.
+Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by the release webhook and two crons: an incremental sync every 30 minutes and a full sync at 03:00 UTC.
 
 ## Development
 

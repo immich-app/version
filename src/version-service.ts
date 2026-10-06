@@ -1,15 +1,51 @@
 import type { DeferredRepository } from './deferred.js';
-import type { IGitHubRepository } from './github-repository.js';
+import { toProjectRelease, type IGitHubRepository } from './github-repository.js';
 import { MemoryCache } from './memory-cache.js';
 import { Metric, type IMetricsRepository } from './metrics.js';
-import { releaseChannels, type IReleaseRepository, type ReleaseChannel } from './release-repository.js';
-import type { GitHubRelease, VersionResponse } from './types.js';
+import { normalize, type Project } from './projects.js';
+import type { IReleaseRepository } from './release-repository.js';
+import { latestPerChannel } from './releases.js';
+import type { GitHubRelease, LatestRelease, ProjectRelease } from './types.js';
 
 const VERSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// The newest release on each of a project's channels, null for an empty one.
+type ChannelReleases = Map<string, LatestRelease | null>;
+
+interface ProjectVersionCache {
+  cache: MemoryCache<ChannelReleases>;
+  // Set while a background refresh runs, so concurrent stale requests start one.
+  revalidating: boolean;
+}
+
+/**
+ * One version cache per project, made on first use. Only registered projects
+ * reach it, so it stays bounded. Every channel is cached, empty ones as null,
+ * so a project without an rc still answers rc requests from memory.
+ */
+export class VersionCaches {
+  private entries = new Map<string, ProjectVersionCache>();
+
+  get(projectId: string): ProjectVersionCache {
+    let entry = this.entries.get(projectId);
+    if (!entry) {
+      entry = { cache: new MemoryCache<ChannelReleases>(VERSION_CACHE_TTL_MS), revalidating: false };
+      this.entries.set(projectId, entry);
+    }
+    return entry;
+  }
+
+  invalidate(projectId: string): void {
+    this.entries.get(projectId)?.cache.invalidate();
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+}
+
 // Module-level state - persists across requests within the same isolate
-export const versionCache = new MemoryCache<Map<ReleaseChannel, VersionResponse>>(VERSION_CACHE_TTL_MS);
-export const revalidationState = { inFlight: false };
+export const versionCaches = new VersionCaches();
 
 export class VersionService {
   constructor(
@@ -17,23 +53,28 @@ export class VersionService {
     private metrics: IMetricsRepository,
   ) {}
 
-  async getLatestVersion(deferred: DeferredRepository, channel: ReleaseChannel): Promise<VersionResponse | null> {
-    const cached = versionCache.get();
+  async getLatestRelease(
+    deferred: DeferredRepository,
+    project: Project,
+    channel: string,
+  ): Promise<LatestRelease | null> {
+    const entry = versionCaches.get(project.id);
+    const cached = entry.cache.get();
 
-    if (cached && !cached.stale && cached.value.has(channel)) {
+    if (cached && !cached.stale) {
       this.metrics.push(Metric.create('memory_cache_hit').intField('count', 1));
-      return cached.value.get(channel)!;
+      return cached.value.get(channel) ?? null;
     }
 
     if (cached?.stale) {
       this.metrics.push(Metric.create('memory_cache_stale').intField('count', 1));
-      if (!revalidationState.inFlight) {
-        revalidationState.inFlight = true;
+      if (!entry.revalidating) {
+        entry.revalidating = true;
         deferred.defer(async () => {
           try {
-            await this.refreshVersionCache();
+            await this.refreshVersionCache(project);
           } finally {
-            revalidationState.inFlight = false;
+            entry.revalidating = false;
           }
         });
       }
@@ -41,40 +82,48 @@ export class VersionService {
     }
 
     this.metrics.push(Metric.create('memory_cache_miss').intField('count', 1));
-    const releases = await this.refreshVersionCache();
-    return releases.get(channel) ?? null;
+    const latest = await this.refreshVersionCache(project);
+    return latest.get(channel) ?? null;
   }
 
-  private async refreshVersionCache(): Promise<Map<ReleaseChannel, VersionResponse>> {
-    const latest = await this.metrics.monitorAsyncFunction({ name: 'd1_get_latest' }, async () => {
-      const releases = await Promise.all(
-        releaseChannels.map(async (channel) => [channel, await this.releaseRepository.getLatest(channel)] as const),
-      );
-      return new Map(releases);
+  // One read of every stored release fills every channel. It reads all of the
+  // project's rows, which d1_get_latest's duration keeps an eye on.
+  private async refreshVersionCache(project: Project): Promise<ChannelReleases> {
+    const releases = await this.metrics.monitorAsyncFunction({ name: 'd1_get_latest' }, () =>
+      this.releaseRepository.list(project.id),
+    )();
+
+    const latest = latestPerChannel(project, releases);
+    versionCaches.get(project.id).cache.set(latest);
+    return latest;
+  }
+
+  /**
+   * Stores a release the webhook reported, if its tag is one of the project's.
+   * It never marks the project as fully synced: one release says nothing about
+   * the ones before it.
+   */
+  async handleReleasePublished(project: Project, release: GitHubRelease): Promise<void> {
+    await this.metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, async () => {
+      if (normalize(project, release.tag_name)) {
+        await this.releaseRepository.upsertMany(project.id, [toProjectRelease(release)]);
+      }
     })();
-
-    const response = new Map<ReleaseChannel, VersionResponse>(
-      [...latest]
-        .filter(([_, release]) => release !== null)
-        .map(
-          ([channel, release]) =>
-            [channel, { version: release!.tag_name, published_at: release!.published_at }] as const,
-        ),
-    );
-
-    versionCache.set(response);
-    return response;
-  }
-
-  async handleReleasePublished(release: GitHubRelease): Promise<void> {
-    await this.metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, () => this.releaseRepository.upsert(release))();
     this.metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag_name).intField('count', 1));
-    versionCache.invalidate();
-    await this.emitLatestVersion();
-    await this.emitReleaseCount();
+    versionCaches.invalidate(project.id);
+    await this.emitReleaseStats(project);
   }
 
-  async syncFromGitHub(githubRepository: IGitHubRepository): Promise<{ synced: number; full: boolean }> {
+  /**
+   * Fetches every release when GitHub's latest isn't the newest stored one on
+   * the project's default channel, or when the project has never had a full
+   * sync. A webhook can store the latest release first, which must not stand in
+   * for the history before it.
+   */
+  async syncFromGitHub(
+    project: Project,
+    githubRepository: IGitHubRepository,
+  ): Promise<{ synced: number; full: boolean }> {
     const latest = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_latest' }, () =>
       githubRepository.fetchLatestRelease(),
     )();
@@ -83,62 +132,95 @@ export class VersionService {
       return { synced: 0, full: false };
     }
 
-    const stored = await this.releaseRepository.getLatest();
-    const isNewRelease = !stored || stored.tag_name !== latest.tag_name;
-
-    if (isNewRelease) {
-      const releases = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>
-        githubRepository.fetchReleases(),
-      )();
-      await this.metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
-        this.releaseRepository.bulkUpsert(releases),
-      )();
-      this.metrics.push(Metric.create('cron_releases_synced').intField('count', releases.length));
-      versionCache.invalidate();
-      await this.emitReleaseCount();
-      return { synced: releases.length, full: true };
+    const stored = await this.releaseRepository.list(project.id);
+    const fullySynced = (await this.releaseRepository.getFullSyncedAt(project.id)) !== null;
+    if (fullySynced && latestPerChannel(project, stored).get(project.defaultChannel)?.tag === latest.tag_name) {
+      return { synced: 0, full: false };
     }
 
-    await this.emitReleaseCount();
-    return { synced: 0, full: false };
+    const synced = await this.storeAllReleases(project, githubRepository, stored);
+    this.metrics.push(Metric.create('cron_releases_synced').intField('count', synced));
+    return { synced, full: true };
   }
 
-  async fullSync(githubRepository: IGitHubRepository): Promise<number> {
+  async fullSync(project: Project, githubRepository: IGitHubRepository): Promise<number> {
+    const stored = await this.releaseRepository.list(project.id);
+    const count = await this.storeAllReleases(project, githubRepository, stored);
+    this.metrics.push(Metric.create('cron_full_sync').intField('count', count));
+    return count;
+  }
+
+  // Fetches every release, writes the ones that changed and records the full
+  // sync. Returns how many releases were fetched.
+  private async storeAllReleases(
+    project: Project,
+    githubRepository: IGitHubRepository,
+    stored: ProjectRelease[],
+  ): Promise<number> {
     const releases = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>
       githubRepository.fetchReleases(),
     )();
 
-    await this.metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
-      this.releaseRepository.bulkUpsert(releases),
-    )();
+    const fetched = releases.map((release) => toProjectRelease(release));
+    const changed = changedReleases(project, fetched, stored);
+    if (changed.length > 0) {
+      await this.metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
+        this.releaseRepository.upsertMany(project.id, changed),
+      )();
+      versionCaches.invalidate(project.id);
+    }
 
-    this.metrics.push(Metric.create('cron_full_sync').intField('count', releases.length));
-    versionCache.invalidate();
-    await this.emitReleaseCount();
+    await this.releaseRepository.markFullSynced(project.id);
     return releases.length;
   }
 
-  async emitLatestVersion(): Promise<void> {
-    const latest = await this.releaseRepository.getLatest();
+  // How many releases the project has stored, and the newest version on its
+  // default channel. The user agent its servers would send at that version lets
+  // the recording rules count the servers that are up to date.
+  async emitReleaseStats(project: Project): Promise<void> {
+    const releases = await this.releaseRepository.list(project.id);
+    this.metrics.push(Metric.create('d1_release_count').intField('count', releases.length));
+
+    const latest = latestPerChannel(project, releases).get(project.defaultChannel);
     if (!latest) {
       return;
     }
 
-    const version = latest.tag_name.replace(/^v/, '');
-    this.metrics.push(
-      Metric.create('latest_version')
-        .addTag('version', version)
-        .addTag('user_agent', `immich-server/${version}`)
-        .intField('count', 1),
+    const metric = Metric.create('latest_version').addTag('version', latest.version);
+    const { serverUserAgentPrefix } = project.analytics;
+    if (serverUserAgentPrefix) {
+      metric.addTag('user_agent', `${serverUserAgentPrefix}${latest.version}`);
+    }
+    this.metrics.push(metric.intField('count', 1));
+  }
+}
+
+/**
+ * The fetched releases worth writing: the project's own tags (see normalize())
+ * that are new, or whose published date, source id or forge prerelease flag
+ * changed. At steady state that is none. A release listed twice, as when one is
+ * published mid-fetch and shifts the pages, is written once.
+ */
+export function changedReleases(
+  project: Project,
+  fetched: readonly ProjectRelease[],
+  stored: readonly ProjectRelease[],
+): ProjectRelease[] {
+  const storedByTag = new Map(stored.map((release) => [release.tag, release]));
+  const seen = new Set<string>();
+
+  return fetched.filter((release) => {
+    if (seen.has(release.tag) || !normalize(project, release.tag)) {
+      return false;
+    }
+    seen.add(release.tag);
+
+    const existing = storedByTag.get(release.tag);
+    return (
+      !existing ||
+      existing.published_at !== release.published_at ||
+      existing.source_id !== release.source_id ||
+      existing.forge_prerelease !== release.forge_prerelease
     );
-  }
-
-  isValidChannel(channel: string): channel is ReleaseChannel {
-    return ['rc', 'stable'].includes(channel);
-  }
-
-  private async emitReleaseCount(): Promise<void> {
-    const count = await this.releaseRepository.getCount();
-    this.metrics.push(Metric.create('d1_release_count').intField('count', count));
-  }
+  });
 }

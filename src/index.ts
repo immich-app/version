@@ -9,8 +9,9 @@ import {
   InfluxMetricsProvider,
   Metric,
 } from './metrics.js';
+import { legacyProject } from './projects.js';
 import { ReleaseRepository } from './release-repository.js';
-import type { GitHubRelease } from './types.js';
+import type { GitHubRelease, VersionResponse } from './types.js';
 import { VersionService } from './version-service.js';
 import { verifyWebhookSignature } from './webhook.js';
 
@@ -124,19 +125,27 @@ export default {
                 // we assume stable for backwards compatibility
                 const channel = url.searchParams.get('channel') ?? 'stable';
 
-                if (!versionService.isValidChannel(channel)) {
+                // Immich's channels are exactly stable and rc (src/projects.test.ts).
+                if (!legacyProject.channels.has(channel)) {
                   return errorResponse('Invalid release channel. Expected "stable" or "rc"', 400);
                 }
 
-                const latest = await versionService.getLatestVersion(deferredRepository, channel);
-                return latest ? jsonResponse(latest) : errorResponse('No releases found', 404);
+                const latest = await versionService.getLatestRelease(deferredRepository, legacyProject, channel);
+                if (!latest) {
+                  return errorResponse('No releases found', 404);
+                }
+                // Frozen shape: Immich servers read the raw tag as the version.
+                return jsonResponse({
+                  version: latest.tag,
+                  published_at: latest.published_at,
+                } satisfies VersionResponse);
               },
             )();
           }
 
           case '/v1/docs/versions': {
             return await handleCacheableRequest({ name: 'docs_versions_request', maxAge: 3600 }, () =>
-              docsService.getArchivedVersions(),
+              docsService.getArchivedVersions(legacyProject),
             );
           }
 
@@ -186,9 +195,11 @@ export default {
               id: releaseData.id,
               tag_name: releaseData.tag_name,
               published_at: String(releaseData.published_at ?? ''),
+              prerelease: releaseData.prerelease === true,
             };
 
-            await versionService.handleReleasePublished(release);
+            // The only hook is on immich-app/immich (webhook.tf), so every release is Immich's.
+            await versionService.handleReleasePublished(legacyProject, release);
             return jsonResponse({ success: true });
           }
 
@@ -233,12 +244,12 @@ export default {
     try {
       if (isNightly) {
         const count = await metrics.monitorAsyncFunction({ name: 'cron_full_sync' }, () =>
-          versionService.fullSync(githubRepository),
+          versionService.fullSync(legacyProject, githubRepository),
         )();
         console.log(`[cron] Nightly full sync: ${count} releases`);
       } else {
         const result = await metrics.monitorAsyncFunction({ name: 'cron_sync' }, () =>
-          versionService.syncFromGitHub(githubRepository),
+          versionService.syncFromGitHub(legacyProject, githubRepository),
         )();
         console.log(`[cron] Synced ${result.synced} releases (full=${result.full})`);
       }
@@ -253,9 +264,7 @@ export default {
 
     // Always emit release count and latest version, even if sync failed
     try {
-      const releaseCount = await releaseRepository.getCount();
-      metrics.push(Metric.create('d1_release_count').intField('count', releaseCount));
-      await versionService.emitLatestVersion();
+      await versionService.emitReleaseStats(legacyProject);
     } catch {
       // D1 might not be initialized yet
     }

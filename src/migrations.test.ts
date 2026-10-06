@@ -37,6 +37,21 @@ const SEEDS: Record<string, { insert: D1PreparedStatement; remove: D1PreparedSta
       .bind(424_242, 'v9.8.7', 9, 8, 7),
     remove: db.prepare('DELETE FROM releases WHERE id = 424242'),
   },
+  project_releases: {
+    insert: db
+      .prepare(
+        `INSERT OR IGNORE INTO project_releases (project, tag, published_at, source_id, forge_prerelease, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+      )
+      .bind('replay-probe', 'v9.8.7', '2026-01-01T00:00:00Z', '424242', 0, '2026-01-01T00:00:00Z'),
+    remove: db.prepare("DELETE FROM project_releases WHERE project = 'replay-probe'"),
+  },
+  project_sync_state: {
+    insert: db
+      .prepare('INSERT OR IGNORE INTO project_sync_state (project, full_synced_at) VALUES (?1, ?2)')
+      .bind('replay-probe', '2026-01-01T00:00:00Z'),
+    remove: db.prepare("DELETE FROM project_sync_state WHERE project = 'replay-probe'"),
+  },
 };
 
 const eachSeed = async (action: 'insert' | 'remove') => {
