@@ -40,6 +40,10 @@ jobs:
         run: pnpm run check
         if: ${{ !cancelled() }}
 
+      - name: Validate projects.json
+        run: pnpm run validate:projects
+        if: ${{ !cancelled() }}
+
       - name: Run unit tests
         run: pnpm run test
         if: ${{ !cancelled() }}
