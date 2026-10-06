@@ -2,7 +2,7 @@ import { env, exports } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, { createWorker } from './index.js';
 import { MemoryCache } from './memory-cache.js';
-import { loadProjects, projects } from './projects.js';
+import { legacyProject, loadProjects, projects } from './projects.js';
 import {
   clearReleases,
   createWebhookSignature,
@@ -944,6 +944,9 @@ describe('Version Worker', () => {
 });
 
 describe('Cron sync', () => {
+  // Immich alone, so registering another project changes nothing these runs fetch.
+  const immichOnly = createWorker({ projects: [legacyProject] });
+  const runImmichCron = (cron: string) => runCron(cron, { handler: immichOnly });
   // immich-app/immich, by its id.
   const GITHUB_RELEASES = 'https://api.github.com/repositories/455229168/releases';
   const FULL = `${GITHUB_RELEASES}?per_page=100&page=1`;
@@ -984,7 +987,7 @@ describe('Cron sync', () => {
     const before = await exports.default.fetch('https://example.com/version');
     expect(before.status).toBe(404);
 
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
 
     expect(requested).toEqual([FULL]);
     expect(await storedReleases()).toEqual([
@@ -997,7 +1000,7 @@ describe('Cron sync', () => {
   });
 
   it('only lists the newest releases once a full sync has run, and writes what is new', async () => {
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
     await env.VERSION_DB.exec("UPDATE project_releases SET synced_at = 'before'");
     githubReleases.unshift({
       id: 4,
@@ -1007,7 +1010,7 @@ describe('Cron sync', () => {
     });
     requested = [];
 
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
 
     expect(requested).toEqual([RECENT]);
     const rewritten = await storedReleases();
@@ -1018,11 +1021,11 @@ describe('Cron sync', () => {
   });
 
   it('reports what is stored after a sync, with a retagged release only under its new tag', async () => {
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
     // v1.120.0 was tagged by mistake, and GitHub's release now says v1.115.0.
     githubReleases[0] = { ...githubReleases[0], tag_name: 'v1.115.0' };
 
-    const series = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+    const series = seriesTags(await loggedLines(() => runImmichCron('*/30 * * * *')));
 
     expect(await storedTags()).toEqual(['v1.100.0', 'v1.110.0', 'v1.115.0']);
     expect(series.version_latest_version).toEqual([
@@ -1033,7 +1036,7 @@ describe('Cron sync', () => {
   it('keeps fetching everything until a full sync succeeds, even after a webhook stored the latest release', async () => {
     await publishRelease(githubReleases[0]);
 
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
 
     expect(requested).toEqual([FULL]);
     expect(await storedReleases()).toHaveLength(3);
@@ -1041,7 +1044,7 @@ describe('Cron sync', () => {
   });
 
   it("tags the sync's series with the project, and the run's heartbeat with none", async () => {
-    const series = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+    const series = seriesTags(await loggedLines(() => runImmichCron('*/30 * * * *')));
 
     const immich = { version_project: 'immich' };
     expect(series).toEqual({
@@ -1063,7 +1066,7 @@ describe('Cron sync', () => {
     githubReleases = [{ id: 4, tag_name: 'v1.130.0', published_at: '2025-04-01T00:00:00Z', prerelease: false }];
 
     const webhook = seriesTags(await loggedLines(() => publishRelease(githubReleases[0], { init: EDGE })));
-    const cron = seriesTags(await loggedLines(() => runCron('*/30 * * * *')));
+    const cron = seriesTags(await loggedLines(() => runImmichCron('*/30 * * * *')));
 
     expect(webhook.version_webhook_received).toEqual([{ event: 'release', colo: 'LHR' }]);
     expect(webhook.version_webhook_upsert).toEqual([{ version_project: 'immich', colo: 'LHR' }]);
@@ -1079,7 +1082,7 @@ describe('Cron sync', () => {
   });
 
   it('writes only new and changed releases on the nightly full sync, and deletes retracted ones', async () => {
-    await runCron('*/30 * * * *');
+    await runImmichCron('*/30 * * * *');
     // A time long past, like any earlier run's: a delete only takes rows written before its checks.
     await env.VERSION_DB.exec("UPDATE project_releases SET synced_at = '2000-01-01T00:00:00.000Z'");
     githubReleases = [
@@ -1090,7 +1093,7 @@ describe('Cron sync', () => {
     ];
     requested = [];
 
-    await runCron('0 3 * * *');
+    await runImmichCron('0 3 * * *');
 
     // GitHub confirms that v1.110.0 is gone.
     expect(requested).toEqual([FULL, `${GITHUB_RELEASES}/2`]);
