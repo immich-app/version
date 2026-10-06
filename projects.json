@@ -1,0 +1,28 @@
+{
+  "$schema": "./projects.schema.json",
+  "projects": [
+    {
+      "id": "immich",
+      "name": "Immich",
+      "source": { "type": "github-releases", "repo": "immich-app/immich", "repoId": 455229168 },
+      "tags": { "pattern": "^v(?<version>\\d+\\.\\d+\\.\\d+(?:-rc\\.\\d+)?)$", "scheme": "semver" },
+      "channels": { "stable": [], "rc": ["rc"] },
+      "defaultChannel": "stable",
+      "analytics": { "clientIdentity": true, "serverUserAgentPrefix": "immich-server/" },
+      "examples": {
+        "v3.2.4": { "version": "3.2.4", "channels": ["stable", "rc"] },
+        "v3.3.0-rc.2": { "version": "3.3.0-rc.2", "channels": ["rc"] },
+        "v3.0.0-rc.0": { "version": "3.0.0-rc.0", "channels": ["rc"] },
+        "v2.0.0": { "version": "2.0.0", "channels": ["stable", "rc"] },
+        "v1.100.0": { "version": "1.100.0", "channels": ["stable", "rc"] },
+        "v1.43.0": { "version": "1.43.0", "channels": ["stable", "rc"] },
+        "v1.42.0_65-dev": null,
+        "v1.13.0_20-dev": null,
+        "v1.5.0+8-dev": null,
+        "v1.4.0+7-dev": null,
+        "v1.4.0-dev": null,
+        "v0.5-dev": null
+      }
+    }
+  ]
+}

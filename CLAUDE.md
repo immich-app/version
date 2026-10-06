@@ -14,6 +14,7 @@ This repo deploys a fresh instance to the FUTO Cloudflare account. The existing 
 pnpm install
 pnpm run dev        # wrangler dev
 pnpm run test       # vitest run (via @cloudflare/vitest-plugin); test:watch for watch mode
+pnpm run validate:projects # projects.json's validator and examples (src/projects.test.ts)
 pnpm run check      # tsc --noEmit
 pnpm run lint       # eslint . --max-warnings 0
 pnpm run format     # prettier --check .
@@ -24,6 +25,7 @@ pnpm run build      # wrangler deploy --dry-run --outdir dist/version
 
 ```
 src/                      # worker source and tests
+projects.json             # the project registry (see Projects); projects.schema.json describes it for editors
 migrations/               # D1 migrations, applied by Terraform (d1.tf)
 o11y/                     # dashboards, alerts and recording rules shipped to FUTO o11y (o11y/README.md)
 wrangler.toml             # local dev / dry-run build config only
@@ -47,6 +49,18 @@ Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They impor
 - No data copies, table rebuilds or `INSERT`s. Those need a real migration ledger first.
 
 The replay test fails on anything that errors, or that changes the schema or any row when re-run. Give every new table a seed row in `SEEDS` (`src/migrations.test.ts`); a test fails if one is missing.
+
+## Projects
+
+`projects.json` registers the projects whose releases the service tracks. Only Immich is registered, and nothing reads the registry at runtime yet. `src/projects.ts` validates it, compiles its tag patterns and provides `normalize(project, tag)`. `src/version-schemes.ts` parses and orders versions.
+
+- An id (`^[a-z][a-z0-9-]{1,31}$`) is permanent: it is the URL segment, the D1 key and the `version_project` metric tag.
+- `tags.pattern` must match the whole tag and capture the version in a group named `version`, which `tags.scheme` (`semver` or `dotted`) parses. Any other tag is not the project's.
+- A channel serves every stable release, plus the prereleases whose label it lists (`*` lists them all). The label is the first prerelease identifier's leading letters, lowercased, so `rc.2` and `rc1` are both `rc`. A prerelease no channel lists is never served.
+- Versions are ordered by their scheme, not by release date. Identifiers of letters then digits compare numerically (`rc2` < `rc10`), unlike plain semver.
+- `examples` maps real tags to the version and channels they must normalize to, or `null` for a tag the project ignores. `src/projects.test.ts` checks every one, and CI runs it as its own "Validate projects.json" step.
+- `projects.schema.json` is only for editors; the validator in `src/projects.ts` is the check that counts. A test keeps their ids, schemes and source types in step.
+- `analytics.clientIdentity` puts client IPs and user agents on request metrics. Only the projects in the test's `CLIENT_IDENTITY_PROJECTS` may set it.
 
 ## Deployment
 

@@ -17,6 +17,7 @@ Releases are stored in D1 and kept in sync by the release webhook and two crons:
 pnpm install
 pnpm run dev        # wrangler dev
 pnpm run test       # vitest run
+pnpm run validate:projects # check projects.json and its examples
 pnpm run check      # tsc --noEmit
 pnpm run lint
 pnpm run format

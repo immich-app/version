@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Version service project registry",
+  "description": "The projects the version service tracks. Editors use this schema; loadProjects() in src/projects.ts is the check that counts, and CI runs it.",
+  "type": "object",
+  "required": ["projects"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/project" }
+    }
+  },
+  "definitions": {
+    "project": {
+      "type": "object",
+      "required": ["id", "name", "source", "tags", "channels", "defaultChannel", "analytics", "examples"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Permanent: the URL segment, the D1 key and the version_project metric tag. Unique.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,31}$"
+        },
+        "name": { "description": "Display name.", "type": "string", "pattern": "\\S" },
+        "source": {
+          "description": "Where releases come from.",
+          "oneOf": [{ "$ref": "#/definitions/githubReleasesSource" }]
+        },
+        "tags": {
+          "type": "object",
+          "required": ["pattern", "scheme"],
+          "additionalProperties": false,
+          "properties": {
+            "pattern": {
+              "description": "A JavaScript regex anchored with ^ and $ that captures the version in a group named \"version\". Tags it doesn't match are ignored.",
+              "type": "string",
+              "pattern": "^\\^.*\\$$"
+            },
+            "scheme": {
+              "description": "How the version is parsed and ordered. semver: strict semver. dotted: one to four numeric components, optionally followed by a -prerelease.",
+              "enum": ["semver", "dotted"]
+            }
+          }
+        },
+        "channels": {
+          "description": "Channel name -> the prerelease labels it serves on top of every stable release. A label is the leading letters of the first prerelease identifier, lowercased (rc.2 and rc1 are both rc). \"*\" admits every prerelease.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+          "additionalProperties": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^([a-z]+|\\*)$" }
+          }
+        },
+        "defaultChannel": {
+          "description": "The channel served when a request names none. Must be one of the channels.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "analytics": {
+          "type": "object",
+          "required": ["clientIdentity"],
+          "additionalProperties": false,
+          "properties": {
+            "clientIdentity": {
+              "description": "Tag request metrics with client IPs and user agents. A privacy and cardinality decision; tests allowlist the projects that may set it.",
+              "type": "boolean"
+            },
+            "serverUserAgentPrefix": {
+              "description": "The user agent prefix the project's servers send, followed by their version.",
+              "type": "string",
+              "pattern": "\\S"
+            }
+          }
+        },
+        "examples": {
+          "description": "Real tags and what they must normalize to, or null for a tag the project ignores. Tests check every one.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["version", "channels"],
+                "additionalProperties": false,
+                "properties": {
+                  "version": { "type": "string", "pattern": "\\S" },
+                  "channels": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "githubReleasesSource": {
+      "type": "object",
+      "required": ["type", "repo", "repoId"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "github-releases" },
+        "repo": { "description": "owner/name", "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
+        "repoId": {
+          "description": "GitHub's repository id (gh api repos/OWNER/NAME --jq .id), which survives renames and transfers.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
