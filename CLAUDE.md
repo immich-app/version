@@ -51,8 +51,9 @@ Tests never edit `projects.json`. `createWorker({ projects })` (`src/index.ts`) 
 - Use `CREATE TABLE/INDEX IF NOT EXISTS` and `DROP … IF EXISTS`.
 - `ALTER TABLE … ADD` goes last in its file, because its replay error stops the file.
 - No data copies, table rebuilds or `INSERT`s. Those need a real migration ledger first.
+- To drop a table, delete the files that create it in the same change, as `0004` did for `releases`. Otherwise every replay recreates it only for the drop to remove it again.
 
-The replay test fails on anything that errors, or that changes the schema or any row when re-run. Give every new table a seed row in `SEEDS` (`src/migrations.test.ts`); a test fails if one is missing.
+The replay test fails on anything that errors, or that changes the schema or any row when re-run. Give every new table a seed row in `SEEDS` (`src/migrations.test.ts`); a test fails if one is missing. Another test replays the migrations over the legacy table as dev and prod held it, and expects only that table gone.
 
 ## Projects
 
@@ -75,7 +76,7 @@ The replay test fails on anything that errors, or that changes the schema or any
 - A sync writes only new or changed rows (`changedReleases()`: published date, source id or forge prerelease flag), in multi-row statements of at most 100 bound parameters, D1's limit.
 - Every full fetch records `project_sync_state.full_synced_at`; a webhook write never does. A project gets a full fetch on every run until it has one, so a webhook that stored the latest release first can't stand in for the history before it.
 - A full fetch also deletes the stored releases its source no longer has: deleted, or turned back into drafts. Leaving a release out of the listing only makes it a candidate (`retractedReleases()`): pages are offsets, so a release deleted between two pages shifts the rest, and one that still exists can go unlisted. The source asks about each candidate by itself (`confirmRetracted()`), at most 20 a sync (`MAX_RETRACTION_CHECKS`, the newest published first; the rest wait for the next, the older ones for as long as 20 newer ones stay unconfirmed) and for at most 20s in all (`RETRACTION_CHECK_BUDGET_MS`), and only the ones it confirms gone are deleted. Anything short of an answer (another status, a network error, a timeout, the 20s running out) keeps a release, and a rate limit fails the sync before it deletes anything. Only a listing that reached its end has candidates. One that stopped at its page cap deletes nothing: GitHub lists by creation date, so a release drafted long ago and published lately can sit past the cap with a recent publish date. So a project with more releases than the cap keeps its retracted ones. A complete empty listing makes every stored release a candidate, so a project's last release can be taken down; confirmation keeps a source that briefly lists nothing from emptying it. The delete matches each release's tag and source id, and only rows not written since the checks began (`deleteMany()`), so a release the webhook stored under the same tag, or republished under the same id, while the checks ran survives. Both times are D1's clock: every write is stamped when it lands (`synced_at` is `strftime(…, 'now')` in the statement, not the worker's time when it built the batch), and the cutoff is `now()` read from D1. `releases_deleted` counts the rows the delete actually removed. Incremental syncs never delete.
-- The legacy `releases` table (`0001`, `0002`) is no longer read or written. It stays until it is dropped in its own migration.
+- `0004` drops the legacy `releases` table, which held Immich's releases before `project_releases`. The deleted `0001` and `0002` created it, and dev and prod still had it.
 
 ### Sync
 
