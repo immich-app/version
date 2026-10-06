@@ -112,11 +112,7 @@ function parseRelease(item: unknown): GitHubRelease | null {
 
   return {
     id: item.id,
-    url: String(item.url ?? ''),
     tag_name: item.tag_name,
-    name: String(item.name ?? ''),
-    created_at: String(item.created_at ?? ''),
     published_at: String(item.published_at ?? ''),
-    body: String(item.body ?? ''),
   };
 }

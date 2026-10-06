@@ -33,10 +33,6 @@ class FakeMetrics implements IMetricsRepository {
 const release: GitHubRelease = {
   id: 4,
   tag_name: 'v1.130.0',
-  name: 'v1.130.0',
-  url: 'https://api.github.com/repos/immich-app/immich/releases/4',
-  body: 'New release',
-  created_at: '2025-04-01T00:00:00Z',
   published_at: '2025-04-01T00:00:00Z',
 };
 
@@ -46,7 +42,6 @@ const cachedVersions = (): Map<ReleaseChannel, VersionResponse> =>
 function createReleaseRepository(overrides: Partial<IReleaseRepository> = {}): IReleaseRepository {
   return {
     getLatest: vi.fn(() => Promise.resolve<GitHubRelease | null>(release)),
-    getNewerThan: vi.fn(() => Promise.resolve([])),
     getLatestPatchPerMinor: vi.fn(() => Promise.resolve([])),
     getCount: vi.fn(() => Promise.resolve(42)),
     upsert: vi.fn(() => Promise.resolve()),
@@ -134,32 +129,16 @@ describe('VersionService', () => {
       expect(metrics.countOf('d1_release_count')).toBe(42);
     });
 
-    it('upserts only the latest release when its body changed', async () => {
-      const releaseRepository = createReleaseRepository({
-        getLatest: vi.fn(() => Promise.resolve({ ...release, body: 'Old notes' })),
-      });
+    it('writes nothing when the latest release is already stored', async () => {
+      const releaseRepository = createReleaseRepository();
       const github = createGitHubRepository();
       const service = new VersionService(releaseRepository, metrics);
 
-      const result = await service.syncFromGitHub(github);
+      await service.syncFromGitHub(github);
 
-      expect(result).toEqual({ synced: 1, full: false });
-      expect(releaseRepository.upsert).toHaveBeenCalledExactlyOnceWith(release);
+      expect(releaseRepository.upsert).not.toHaveBeenCalled();
       expect(releaseRepository.bulkUpsert).not.toHaveBeenCalled();
       expect(github.fetchReleases).not.toHaveBeenCalled();
-      expect(metrics.names()).toContain('cron_release_updated');
-    });
-
-    it('invalidates the version cache when the latest release body changed', async () => {
-      versionCache.set(cachedVersions());
-      const releaseRepository = createReleaseRepository({
-        getLatest: vi.fn(() => Promise.resolve({ ...release, body: 'Old notes' })),
-      });
-      const service = new VersionService(releaseRepository, metrics);
-
-      await service.syncFromGitHub(createGitHubRepository());
-
-      expect(versionCache.get()).toBeNull();
     });
 
     it('invalidates the version cache after syncing a new release', async () => {

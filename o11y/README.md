@@ -32,7 +32,7 @@ The worker pushes Influx line protocol to o11y's vmauth gateway (`METRICS_URL`, 
 
 `project=version, cluster=version` is the tenant key: o11y's vminsert files those series under their own VictoriaMetrics tenant, `7:1`. Changing either value strands the data in tenant 0, out of reach of the recording rules.
 
-Metric names are `<measurement>_<field>`, for example `version_handle_request_invocation`. On top of the identity labels a series carries `continent`, `colo` and `asOrg` (the Cloudflare edge; the cron has none), plus the operation's own tags, such as `client_ip` and `user_agent` on `/version` and `/changelog`. `version_http_response` tags `method` and `path` only with the worker's own methods and routes, and `other` for anything else, so a scanner cannot create a series per request.
+Metric names are `<measurement>_<field>`, for example `version_handle_request_invocation`. On top of the identity labels a series carries `continent`, `colo` and `asOrg` (the Cloudflare edge; the cron has none), plus the operation's own tags, such as `client_ip` and `user_agent` on `/version`. `version_http_response` tags `method` and `path` only with the worker's own methods and routes, and `other` for anything else, so a scanner cannot create a series per request.
 
 The token (`TF_VAR_o11y_vmauth_token` in `deployment/.env`) is FUTO's vmauth password, mirrored into immich's `tf_dev` and `tf_prod` vaults by core-infra-tf and baked into the worker at deploy time. After FUTO rotates it, apply core-infra-tf, then run the Build workflow on `main` (workflow_dispatch) to redeploy dev and prod.
 
@@ -50,7 +50,7 @@ Each `alerts/*.yaml` file holds one `GrafanaAlertRuleGroup` with `folderRef: ver
 
 `alerts/version.yaml` holds two rules:
 
-- `version-cron-heartbeat` (critical). The `*/30` cron writes `version_cron_sync_invocation` on every run, so an hour without it, held for 15 minutes, means at least two missed runs. The absence is guarded: an o11y instance that has seen nothing for a week stays quiet. On Fleet that guard only sees tenant `7:1` while the tenant has received a sample that UTC day, because multitenant vmselect discovers tenants from the query time. The tenant vmalert's `or vector(0)` rules write one every 5 minutes. If the worker and the tenant vmalert both stop, the heartbeat resolves at the next UTC midnight.
+- `version-cron-heartbeat` (critical). The `*/30` cron writes `version_cron_sync_invocation` on every run, so an hour without it, held for 15 minutes, means at least two missed runs. The absence is deliberately unguarded, so the alert keeps firing for as long as the outage lasts. A "seen in the last week" guard would not hold on Fleet: multitenant vmselect only discovers tenants that received samples on the query's UTC day, so the guard would resolve the alert at the next UTC midnight of a full outage. The alert ships in the same bundle as the tenant's vmalert, so it only exists where version reports.
 - `version-recording-rules-stale` (warning). The tenant vmalert blackholes its own notifications, so this rule watches its output: `version:requests_immich:count5m` (written every 5 minutes), the derived `version:servers_unique:24h` and `:30d` while there is immich-server traffic, and vmalert's rule-error and dropped-row counters for `job="vmalert-version"`.
 
 ## Recording rules

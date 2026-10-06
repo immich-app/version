@@ -1,11 +1,10 @@
 # version
 
-Cloudflare Worker that serves the latest Immich release to servers doing version checks, release changelogs, and the list of archived docs versions. This repository deploys a fresh instance to the FUTO Cloudflare account; the existing `version.immich.cloud` deployment still runs from [immich-app/services](https://github.com/immich-app/services) until traffic is migrated.
+Cloudflare Worker that serves the latest Immich release to servers doing version checks, plus the list of archived docs versions. This repository deploys a fresh instance to the FUTO Cloudflare account; the existing `version.immich.cloud` deployment still runs from [immich-app/services](https://github.com/immich-app/services) until traffic is migrated.
 
 | Route                   | Description                                                                 |
 | ----------------------- | --------------------------------------------------------------------------- |
 | `GET /version`          | Latest release for a channel (`?channel=stable` (default) or `?channel=rc`) |
-| `GET /changelog`        | Release notes for `?version=` on a channel                                  |
 | `GET /v1/docs/versions` | Docs versions with links to their `*.archive.immich.app` sites              |
 | `POST /webhook`         | GitHub `release` webhook from `immich-app/immich` (HMAC-SHA256 verified)    |
 | `GET /health`           | Health check                                                                |

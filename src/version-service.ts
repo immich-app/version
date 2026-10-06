@@ -1,10 +1,9 @@
-import semver from 'semver';
 import type { DeferredRepository } from './deferred.js';
 import type { IGitHubRepository } from './github-repository.js';
 import { MemoryCache } from './memory-cache.js';
 import { Metric, type IMetricsRepository } from './metrics.js';
 import { releaseChannels, type IReleaseRepository, type ReleaseChannel } from './release-repository.js';
-import type { ChangelogResponse, GitHubRelease, VersionResponse } from './types.js';
+import type { GitHubRelease, VersionResponse } from './types.js';
 
 const VERSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -67,22 +66,6 @@ export class VersionService {
     return response;
   }
 
-  async getChangelog(version: string, channel: ReleaseChannel): Promise<ChangelogResponse> {
-    const parsedVersion = semver.parse(version);
-    if (!parsedVersion) {
-      throw new Error('Invalid version');
-    }
-
-    const [newerReleases, latest] = await this.metrics.monitorAsyncFunction({ name: 'd1_get_changelog' }, () =>
-      Promise.all([
-        this.releaseRepository.getNewerThan(parsedVersion, channel),
-        this.releaseRepository.getLatest(channel),
-      ]),
-    )();
-
-    return { current: version, latest, releases: newerReleases };
-  }
-
   async handleReleasePublished(release: GitHubRelease): Promise<void> {
     await this.metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, () => this.releaseRepository.upsert(release))();
     this.metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag_name).intField('count', 1));
@@ -102,15 +85,6 @@ export class VersionService {
 
     const stored = await this.releaseRepository.getLatest();
     const isNewRelease = !stored || stored.tag_name !== latest.tag_name;
-    const isUpdated = stored?.tag_name === latest.tag_name && stored.body !== latest.body;
-
-    if (isUpdated) {
-      await this.metrics.monitorAsyncFunction({ name: 'd1_upsert' }, () => this.releaseRepository.upsert(latest))();
-      this.metrics.push(Metric.create('cron_release_updated').addTag('tag', latest.tag_name).intField('count', 1));
-      versionCache.invalidate();
-      await this.emitReleaseCount();
-      return { synced: 1, full: false };
-    }
 
     if (isNewRelease) {
       const releases = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>

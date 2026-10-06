@@ -22,22 +22,24 @@ metadata:
     o11y.futo.org/tenant: version
 spec:
   groups:
-    # Per-5m markers computed over raw data.
+    # Per-5m markers computed over raw data. Changed: devtools also counted
+    # /changelog requests, which the worker no longer serves, so
+    # server_seen and server_version_seen now match their _vreq twins.
     - name: version-worker.base
       interval: 5m
       rules:
         - record: version:server_seen:count5m
           expr: |-
-            count by (client_ip) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]) or count_over_time(version_changelog_request_invocation{user_agent=~"immich-server/.*"}[5m]))
+            count by (client_ip) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
         - record: version:server_seen_vreq:count5m
           expr: |-
             count by (client_ip) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
         - record: version:server_seen_continent:count5m
           expr: |-
-            count by (client_ip, continent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]) or count_over_time(version_changelog_request_invocation{user_agent=~"immich-server/.*"}[5m]))
+            count by (client_ip, continent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
         - record: version:server_version_seen:count5m
           expr: |-
-            count by (client_ip, user_agent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]) or count_over_time(version_changelog_request_invocation{user_agent=~"immich-server/.*"}[5m]))
+            count by (client_ip, user_agent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
         - record: version:server_version_seen_vreq:count5m
           expr: |-
             count by (client_ip, user_agent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
@@ -58,10 +60,10 @@ spec:
             sum(count_over_time(version_memory_cache_miss_count[5m]))
         - record: version:requests_immich:count5m
           expr: |-
-            (sum(count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m])) or vector(0)) + (sum(count_over_time(version_changelog_request_invocation{user_agent=~"immich-server/.*"}[5m])) or vector(0))
+            (sum(count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m])) or vector(0))
         - record: version:requests_other:count5m
           expr: |-
-            (sum(count_over_time(version_version_request_invocation{user_agent!~"immich-server/.*",user_agent!=""}[5m])) or vector(0)) + (sum(count_over_time(version_changelog_request_invocation{user_agent!~"immich-server/.*",user_agent!=""}[5m])) or vector(0))
+            (sum(count_over_time(version_version_request_invocation{user_agent!~"immich-server/.*",user_agent!=""}[5m])) or vector(0))
     # Derived from base rule series only (never raw). eval_offset ensures the
     # async remote-write of the base group has landed before evaluation.
     - name: version-worker.derived
