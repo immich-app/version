@@ -1,7 +1,7 @@
 import type { DeferredRepository } from './deferred.js';
 import { toProjectRelease, type IGitHubRepository } from './github-repository.js';
 import { MemoryCache } from './memory-cache.js';
-import { Metric, type IMetricsRepository } from './metrics.js';
+import { Metric, projectMetrics, type IMetricsRepository } from './metrics.js';
 import { normalize, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import { latestPerChannel } from './releases.js';
@@ -58,16 +58,17 @@ export class VersionService {
     project: Project,
     channel: string,
   ): Promise<LatestRelease | null> {
+    const metrics = projectMetrics(this.metrics, project.id);
     const entry = versionCaches.get(project.id);
     const cached = entry.cache.get();
 
     if (cached && !cached.stale) {
-      this.metrics.push(Metric.create('memory_cache_hit').intField('count', 1));
+      metrics.push(Metric.create('memory_cache_hit').intField('count', 1));
       return cached.value.get(channel) ?? null;
     }
 
     if (cached?.stale) {
-      this.metrics.push(Metric.create('memory_cache_stale').intField('count', 1));
+      metrics.push(Metric.create('memory_cache_stale').intField('count', 1));
       if (!entry.revalidating) {
         entry.revalidating = true;
         deferred.defer(async () => {
@@ -81,7 +82,7 @@ export class VersionService {
       return cached.value.get(channel) ?? null;
     }
 
-    this.metrics.push(Metric.create('memory_cache_miss').intField('count', 1));
+    metrics.push(Metric.create('memory_cache_miss').intField('count', 1));
     const latest = await this.refreshVersionCache(project);
     return latest.get(channel) ?? null;
   }
@@ -89,8 +90,9 @@ export class VersionService {
   // One read of every stored release fills every channel. It reads all of the
   // project's rows, which d1_get_latest's duration keeps an eye on.
   private async refreshVersionCache(project: Project): Promise<ChannelReleases> {
-    const releases = await this.metrics.monitorAsyncFunction({ name: 'd1_get_latest' }, () =>
-      this.releaseRepository.list(project.id),
+    const releases = await projectMetrics(this.metrics, project.id).monitorAsyncFunction(
+      { name: 'd1_get_latest' },
+      () => this.releaseRepository.list(project.id),
     )();
 
     const latest = latestPerChannel(project, releases);
@@ -104,12 +106,13 @@ export class VersionService {
    * the ones before it.
    */
   async handleReleasePublished(project: Project, release: GitHubRelease): Promise<void> {
-    await this.metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, async () => {
+    const metrics = projectMetrics(this.metrics, project.id);
+    await metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, async () => {
       if (normalize(project, release.tag_name)) {
         await this.releaseRepository.upsertMany(project.id, [toProjectRelease(release)]);
       }
     })();
-    this.metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag_name).intField('count', 1));
+    metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag_name).intField('count', 1));
     versionCaches.invalidate(project.id);
     await this.emitReleaseStats(project);
   }
@@ -124,7 +127,8 @@ export class VersionService {
     project: Project,
     githubRepository: IGitHubRepository,
   ): Promise<{ synced: number; full: boolean }> {
-    const latest = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_latest' }, () =>
+    const metrics = projectMetrics(this.metrics, project.id);
+    const latest = await metrics.monitorAsyncFunction({ name: 'github_fetch_latest' }, () =>
       githubRepository.fetchLatestRelease(),
     )();
 
@@ -139,14 +143,14 @@ export class VersionService {
     }
 
     const synced = await this.storeAllReleases(project, githubRepository, stored);
-    this.metrics.push(Metric.create('cron_releases_synced').intField('count', synced));
+    metrics.push(Metric.create('cron_releases_synced').intField('count', synced));
     return { synced, full: true };
   }
 
   async fullSync(project: Project, githubRepository: IGitHubRepository): Promise<number> {
     const stored = await this.releaseRepository.list(project.id);
     const count = await this.storeAllReleases(project, githubRepository, stored);
-    this.metrics.push(Metric.create('cron_full_sync').intField('count', count));
+    projectMetrics(this.metrics, project.id).push(Metric.create('cron_full_sync').intField('count', count));
     return count;
   }
 
@@ -157,14 +161,15 @@ export class VersionService {
     githubRepository: IGitHubRepository,
     stored: ProjectRelease[],
   ): Promise<number> {
-    const releases = await this.metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>
+    const metrics = projectMetrics(this.metrics, project.id);
+    const releases = await metrics.monitorAsyncFunction({ name: 'github_fetch_all' }, () =>
       githubRepository.fetchReleases(),
     )();
 
     const fetched = releases.map((release) => toProjectRelease(release));
     const changed = changedReleases(project, fetched, stored);
     if (changed.length > 0) {
-      await this.metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
+      await metrics.monitorAsyncFunction({ name: 'd1_bulk_upsert' }, () =>
         this.releaseRepository.upsertMany(project.id, changed),
       )();
       versionCaches.invalidate(project.id);
@@ -176,10 +181,14 @@ export class VersionService {
 
   // How many releases the project has stored, and the newest version on its
   // default channel. The user agent its servers would send at that version lets
-  // the recording rules count the servers that are up to date.
+  // the recording rules count the servers that are up to date. Both are about
+  // the project, not a request, so the webhook writes the crons' series: none
+  // of the request's geo tags, or "Releases Stored" would count a project
+  // once per series.
   async emitReleaseStats(project: Project): Promise<void> {
+    const metrics = projectMetrics(this.metrics, project.id, { geo: false });
     const releases = await this.releaseRepository.list(project.id);
-    this.metrics.push(Metric.create('d1_release_count').intField('count', releases.length));
+    metrics.push(Metric.create('d1_release_count').intField('count', releases.length));
 
     const latest = latestPerChannel(project, releases).get(project.defaultChannel);
     if (!latest) {
@@ -191,7 +200,7 @@ export class VersionService {
     if (serverUserAgentPrefix) {
       metric.addTag('user_agent', `${serverUserAgentPrefix}${latest.version}`);
     }
-    this.metrics.push(metric.intField('count', 1));
+    metrics.push(metric.intField('count', 1));
   }
 }
 

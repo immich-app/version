@@ -1,7 +1,30 @@
 import { Point } from '@influxdata/influxdb-client';
 import { type AsyncFn, type MonitorOptions, type Operation, monitorAsyncFunction } from './monitor.js';
 
+/**
+ * Labels no metric may set. The first five are o11y's identity labels, which
+ * InfluxMetricsProvider stamps on every line; `project;cluster` and the vm_*
+ * labels pick the tenant; the rest belong to scrapes and alerting. A project's
+ * id goes in `version_project` (projectMetrics()).
+ */
+export const RESERVED_TAGS: ReadonlySet<string> = new Set([
+  'project',
+  'env',
+  'cluster',
+  'provider',
+  'region',
+  'vm_account_id',
+  'vm_project_id',
+  'job',
+  'instance',
+  'severity',
+  'alertname',
+]);
+
+export type ReservedTagPolicy = 'drop' | 'throw';
+
 export class Metric {
+  private static reservedTagPolicy: ReservedTagPolicy = 'drop';
   private _tags = new Map<string, string>();
   private _timestamp = performance.now();
   private _fields = new Map<string, { value: number; type: 'duration' | 'int' }>();
@@ -9,6 +32,17 @@ export class Metric {
 
   static create(name: string) {
     return new Metric(name);
+  }
+
+  /**
+   * Sets what addTag does with a reserved tag, and returns the previous
+   * policy. Production drops it and logs, so one bad key can't fail every
+   * request. src/test/setup.ts makes tests throw, so the key never gets that far.
+   */
+  static setReservedTagPolicy(policy: ReservedTagPolicy): ReservedTagPolicy {
+    const previous = this.reservedTagPolicy;
+    this.reservedTagPolicy = policy;
+    return previous;
   }
 
   get tags() {
@@ -34,13 +68,21 @@ export class Metric {
   }
 
   addTag(key: string, value: string) {
+    if (RESERVED_TAGS.has(key)) {
+      const message = `${this._name} can't be tagged ${key}: o11y reserves that label`;
+      if (Metric.reservedTagPolicy === 'throw') {
+        throw new Error(message);
+      }
+      console.error(`[metrics] ${message}, dropped it`);
+      return this;
+    }
     this._tags.set(key, value);
     return this;
   }
 
   addTags(tags: Record<string, string>) {
     for (const [key, value] of Object.entries(tags)) {
-      this._tags.set(key, value);
+      this.addTag(key, value);
     }
     return this;
   }
@@ -61,6 +103,12 @@ export interface IMetricsProviderRepository {
   flush(): void | Promise<void>;
 }
 
+export interface ScopeOptions {
+  // false leaves out the request's geo tags (its colo), for a series about a
+  // project as a whole that a request and a cron must write as one series.
+  geo?: boolean;
+}
+
 export interface IMetricsRepository {
   monitorAsyncFunction<T extends AsyncFn>(
     operation: Operation,
@@ -68,6 +116,16 @@ export interface IMetricsRepository {
     options?: MonitorOptions,
   ): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>>;
   push(metric: Metric): void;
+  // A repository whose metrics also carry these tags.
+  scoped(tags: Record<string, string>, options?: ScopeOptions): IMetricsRepository;
+}
+
+/**
+ * Scopes metrics to one project: its series carry its id as `version_project`,
+ * never `project`, which is o11y's identity label.
+ */
+export function projectMetrics(metrics: IMetricsRepository, projectId: string, options?: ScopeOptions) {
+  return metrics.scoped({ version_project: projectId }, options);
 }
 
 export class HeaderMetricsProvider implements IMetricsProviderRepository {
@@ -187,21 +245,57 @@ export class InfluxMetricsProvider implements IMetricsProviderRepository {
   }
 }
 
-export class CloudflareMetricsRepository implements IMetricsRepository {
-  private readonly defaultTags: Record<string, string>;
+export interface RequestEdge {
+  continent: string;
+  colo: string;
+  asOrg: string;
+}
 
+// Where a request entered Cloudflare's network.
+export function requestEdge(request: Request): RequestEdge {
+  const cf = request.cf as IncomingRequestCfProperties | undefined;
+  return { continent: cf?.continent ?? '', colo: cf?.colo ?? '', asOrg: cf?.asOrganization ?? '' };
+}
+
+/**
+ * The tags the recording rules count a project's servers by: client IP, user
+ * agent, continent and network. Only a project whose registry entry sets
+ * analytics.clientIdentity gets them, so one whose clients are end-user
+ * devices doesn't put a series per device in the shared store.
+ */
+export function clientTags(request: Request, { clientIdentity }: { clientIdentity: boolean }): Record<string, string> {
+  if (!clientIdentity) {
+    return {};
+  }
+  const { continent, asOrg } = requestEdge(request);
+  return {
+    client_ip: request.headers.get('CF-Connecting-IP') ?? '',
+    user_agent: request.headers.get('User-Agent') ?? '',
+    continent,
+    asOrg,
+  };
+}
+
+export class CloudflareMetricsRepository implements IMetricsRepository {
   constructor(
     private operationPrefix: string,
-    request: Request,
     private metricsProviders: IMetricsProviderRepository[],
-  ) {
-    const cf = request.cf as IncomingRequestCfProperties | undefined;
+    // The request's own tags: its colo on the request path, none on the crons.
     // The deployment's env is an identity label, stamped by InfluxMetricsProvider.
-    this.defaultTags = {
-      continent: cf?.continent ?? '',
-      colo: cf?.colo ?? '',
-      asOrg: cf?.asOrganization ?? '',
-    };
+    private geo: Readonly<Record<string, string>> = {},
+    private tags: Readonly<Record<string, string>> = {},
+  ) {}
+
+  scoped(tags: Record<string, string>, { geo = true }: ScopeOptions = {}): CloudflareMetricsRepository {
+    return new CloudflareMetricsRepository(this.operationPrefix, this.metricsProviders, geo ? this.geo : {}, {
+      ...this.tags,
+      ...tags,
+    });
+  }
+
+  // Added after a metric's own tags, so they win.
+  private get defaultTags(): Record<string, string> {
+    return { ...this.geo, ...this.tags };
   }
 
   monitorAsyncFunction<T extends AsyncFn>(

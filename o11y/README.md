@@ -32,15 +32,23 @@ The worker pushes Influx line protocol to o11y's vmauth gateway (`METRICS_URL`, 
 
 `project=version, cluster=version` is the tenant key: o11y's vminsert files those series under their own VictoriaMetrics tenant, `7:1`. Changing either value strands the data in tenant 0, out of reach of the recording rules.
 
-Metric names are `<measurement>_<field>`, for example `version_handle_request_invocation`. On top of the identity labels a series carries `continent`, `colo` and `asOrg` (the Cloudflare edge; the cron has none), plus the operation's own tags, such as `client_ip` and `user_agent` on `/version`. `version_http_response` tags `method` and `path` only with the worker's own methods and routes, and `other` for anything else, so a scanner cannot create a series per request.
+Metric names are `<measurement>_<field>`, for example `version_handle_request_invocation`. On top of the identity labels and the operation's own tags:
+
+- A series about one project carries its id from `projects.json` as `version_project`. The label is never `project`, which is the identity label above. The crons' run-level series, such as the `version_cron_sync_invocation` heartbeat, carry none.
+- A series about a request carries `colo`, the Cloudflare edge it landed on. `version_handle_request` adds `continent` and `asOrg`, and so does `version_version_request` for projects that set `analytics.clientIdentity` (Immich), along with `client_ip` and `user_agent`.
+- A project's release stats, `version_d1_release_count` and `version_latest_version`, carry no edge, so the webhook and the crons write the same series.
+
+`version_http_response` tags `method` and `path` only with the worker's own methods and routes, and `other` for anything else, so a scanner cannot create a series per request.
 
 The token (`TF_VAR_o11y_vmauth_token` in `deployment/.env`) is FUTO's vmauth password, mirrored into immich's `tf_dev` and `tf_prod` vaults by core-infra-tf and baked into the worker at deploy time. After FUTO rotates it, apply core-infra-tf, then run the Build workflow on `main` (workflow_dispatch) to redeploy dev and prod.
 
-The store keeps one sample per series per 20s. Counting events with `count_over_time` therefore gives a lower bound wherever one series takes more than one event in 20s, which mostly affects request totals without `client_ip`. The affected panels say so.
+The store keeps one sample per series per 20s. Counting events with `count_over_time` therefore gives a lower bound wherever one series takes more than one event in 20s, which mostly affects request totals without `client_ip`; `colo` on every request series spreads them out. The affected panels say so.
 
 ## Dashboards
 
 Each `dashboards/<uid>.json` file is a Grafana export whose `uid` matches the file name. Every query uses the `$datasource` variable, which is limited to and defaults to `VictoriaMetrics Fleet` (uid `VictoriaMetricsFleet`). The default `VictoriaMetrics` datasource only sees the o11y cluster's own tenant and shows nothing here.
+
+The overview has a `$project` variable over `version_project`. Its All value is `.*`, which also matches series from before the label existed. It filters the cache, D1, webhook, cron, GitHub and release panels, and "Requests by Project"; the panels about the worker as a whole ignore it. The server analytics dashboard is Immich's alone.
 
 To change a dashboard, edit it in Grafana, export it with "Export for sharing externally" off, keep the `uid`, and save it over the file. Set `"id": null`. Add new dashboards the same way, with tags `app`, `metrics` and `version`.
 
@@ -55,7 +63,7 @@ Each `alerts/*.yaml` file holds one `GrafanaAlertRuleGroup` with `folderRef: ver
 
 ## Recording rules
 
-`rules/version-recording.yaml` holds the `version:*` rules that the dashboards read, ported from immich-app/devtools. o11y applies this bundle with `commonMetadata` label `o11y.futo.org/tenant: version`. A VMAlert named `version` selects VMRules carrying that label and evaluates them against tenant `7:1`. It adds the identity labels to every result, so the results land back in the same tenant. o11y's own vmalert skips VMRules carrying that label.
+`rules/version-recording.yaml` holds the `version:*` rules that the dashboards read, ported from immich-app/devtools. The memory cache rules and `version:requests_by_project:count5m` keep `version_project`, so the overview can filter them. o11y applies this bundle with `commonMetadata` label `o11y.futo.org/tenant: version`. A VMAlert named `version` selects VMRules carrying that label and evaluates them against tenant `7:1`. It adds the identity labels to every result, so the results land back in the same tenant. o11y's own vmalert skips VMRules carrying that label.
 
 Rules must not set a namespace or a group `tenant`. They must not set an identity label (`project`, `cluster`, `env`, `provider`, `region`, or `vm_account_id`/`vm_project_id`) in a group's or a rule's `labels:` either. Those override the vmalert's external labels, so the results would be written into another tenant, and o11y does not stop that. `render-manifests.sh` rejects all of these, and any alerts or rules file with more than one YAML document.
 

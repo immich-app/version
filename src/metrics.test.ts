@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  clientTags,
   CloudflareMetricsRepository,
   getMetricsIdentity,
   InfluxMetricsProvider,
   Metric,
+  projectMetrics,
+  requestEdge,
+  RESERVED_TAGS,
   type MetricsIdentity,
 } from './metrics.js';
 
@@ -29,6 +33,64 @@ async function flushOne(provider: InfluxMetricsProvider, metric: Metric) {
   const [, init] = fetchSpy.mock.calls[0];
   return String(init?.body);
 }
+
+// A request as it arrives at the worker, with Cloudflare's view of the client.
+function edgeRequest(headers: Record<string, string> = {}) {
+  const request = new Request('https://example.com/', { headers });
+  Object.defineProperty(request, 'cf', { value: { continent: 'EU', colo: 'LHR', asOrganization: 'Example AS' } });
+  return request;
+}
+
+// A repository on a request through LHR, and every metric pushed through it.
+function recordingRepository() {
+  const pushed: Metric[] = [];
+  const recorder = {
+    pushMetric: (metric: Metric) => {
+      pushed.push(metric);
+    },
+    flush: () => {},
+  };
+  const repository = new CloudflareMetricsRepository('version', [recorder], { colo: 'LHR' });
+  const tags = () => pushed.map((metric) => Object.fromEntries(metric.tags));
+  return { repository, pushed, tags };
+}
+
+describe('Metric', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([...RESERVED_TAGS])('throws under tests when tagged %s, by addTag or addTags', (key) => {
+    expect(() => Metric.create('version_x').addTag(key, 'x')).toThrow(`version_x can't be tagged ${key}`);
+    expect(() => Metric.create('version_x').addTags({ colo: 'LHR', [key]: 'x' })).toThrow(
+      `version_x can't be tagged ${key}`,
+    );
+  });
+
+  it('drops and logs a reserved tag in production, keeping the rest', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previous = Metric.setReservedTagPolicy('drop');
+    let metric: Metric;
+    try {
+      metric = Metric.create('version_x').addTags({ project: 'yucca', colo: 'LHR' }).addTag('env', 'prod');
+    } finally {
+      Metric.setReservedTagPolicy(previous);
+    }
+
+    expect(metric.tags).toEqual(new Map([['colo', 'LHR']]));
+    expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("version_x can't be tagged project"));
+  });
+
+  it('takes any other tag', () => {
+    expect(Metric.create('version_x').addTags({ version_project: 'immich', projects: 'x' }).tags).toEqual(
+      new Map([
+        ['version_project', 'immich'],
+        ['projects', 'x'],
+      ]),
+    );
+  });
+});
 
 describe('getMetricsIdentity', () => {
   it('defaults to the version tenant labels, with env from ENVIRONMENT', () => {
@@ -68,11 +130,12 @@ describe('InfluxMetricsProvider', () => {
     );
   });
 
-  it('never lets a metric tag override an identity label', async () => {
-    const body = await flushOne(
-      new InfluxMetricsProvider(writeUrl, 'token', identity),
-      Metric.create('version_x').addTags({ project: 'yucca', cluster: 'father', env: 'prod' }).intField('count', 1),
-    );
+  it('still stamps the identity labels over a metric tag that got past the guard', async () => {
+    const metric = Metric.create('version_x').intField('count', 1);
+    // Metric.addTag refuses these keys; tags is the map underneath it.
+    metric.tags.set('project', 'yucca').set('cluster', 'father').set('env', 'prod');
+
+    const body = await flushOne(new InfluxMetricsProvider(writeUrl, 'token', identity), metric);
 
     expect(body).toContain(',cluster=version,env=dev,project=version,');
     expect(body).not.toContain('yucca');
@@ -152,22 +215,85 @@ describe('InfluxMetricsProvider', () => {
 });
 
 describe('CloudflareMetricsRepository', () => {
-  it('tags metrics with the request edge and leaves env to the provider', () => {
-    const pushed: Metric[] = [];
-    const request = new Request('https://example.com/');
-    Object.defineProperty(request, 'cf', { value: { continent: 'EU', colo: 'LHR', asOrganization: 'Example AS' } });
-    const repository = new CloudflareMetricsRepository('version', request, [
-      {
-        pushMetric: (metric) => {
-          pushed.push(metric);
-        },
-        flush: () => {},
-      },
-    ]);
+  it('prefixes metrics, tags them with its geo and leaves env to the provider', async () => {
+    const { repository, pushed, tags } = recordingRepository();
 
     repository.push(Metric.create('http_response').intField('count', 1));
+    await repository.monitorAsyncFunction({ name: 'handle_request', tags: { continent: 'EU' } }, async () => {})();
 
-    expect(pushed[0].name).toBe('version_http_response');
-    expect(Object.fromEntries(pushed[0].tags)).toEqual({ continent: 'EU', colo: 'LHR', asOrg: 'Example AS' });
+    expect(pushed.map((metric) => metric.name)).toEqual(['version_http_response', 'version_handle_request']);
+    expect(tags()).toEqual([{ colo: 'LHR' }, { continent: 'EU', colo: 'LHR' }]);
+  });
+
+  it("scopes metrics to a project, on top of the parent's tags, without changing the parent", async () => {
+    const { repository, tags } = recordingRepository();
+    const scoped = projectMetrics(repository, 'immich');
+
+    scoped.push(Metric.create('memory_cache_hit').intField('count', 1));
+    await scoped.monitorAsyncFunction({ name: 'd1_get_latest' }, async () => {})();
+    scoped.scoped({ cache: 'cdn' }).push(Metric.create('docs_versions_request').intField('invocation', 1));
+    repository.push(Metric.create('http_response').intField('count', 1));
+
+    expect(tags()).toEqual([
+      { version_project: 'immich', colo: 'LHR' },
+      { version_project: 'immich', colo: 'LHR' },
+      { version_project: 'immich', cache: 'cdn', colo: 'LHR' },
+      { colo: 'LHR' },
+    ]);
+  });
+
+  it('leaves out the geo tags of a scope with geo: false, and of its scopes', () => {
+    const { repository, tags } = recordingRepository();
+    const stats = projectMetrics(repository, 'immich', { geo: false });
+
+    stats.push(Metric.create('d1_release_count').intField('count', 3));
+    stats.scoped({ channel: 'stable' }).push(Metric.create('latest_version').intField('count', 1));
+
+    expect(tags()).toEqual([{ version_project: 'immich' }, { version_project: 'immich', channel: 'stable' }]);
+  });
+
+  it("lets a scope's tags win over a metric's own", () => {
+    const { repository, tags } = recordingRepository();
+
+    projectMetrics(repository, 'immich').push(
+      Metric.create('x').addTag('version_project', 'other').intField('count', 1),
+    );
+
+    expect(tags()).toEqual([{ version_project: 'immich', colo: 'LHR' }]);
+  });
+
+  it('refuses a reserved key in a scope', () => {
+    const { repository } = recordingRepository();
+
+    expect(() => repository.scoped({ project: 'immich' }).push(Metric.create('x').intField('count', 1))).toThrow(
+      "version_x can't be tagged project",
+    );
+  });
+});
+
+describe('requestEdge', () => {
+  it("reads Cloudflare's view of where the request came in", () => {
+    expect(requestEdge(edgeRequest())).toEqual({ continent: 'EU', colo: 'LHR', asOrg: 'Example AS' });
+  });
+
+  it('is empty without one', () => {
+    expect(requestEdge(new Request('https://example.com/'))).toEqual({ continent: '', colo: '', asOrg: '' });
+  });
+});
+
+describe('clientTags', () => {
+  const headers = { 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': 'immich-server/v3.2.4' };
+
+  it('identifies the client of a project with clientIdentity, by IP, user agent, continent and network', () => {
+    expect(clientTags(edgeRequest(headers), { clientIdentity: true })).toEqual({
+      client_ip: '192.0.2.1',
+      user_agent: 'immich-server/v3.2.4',
+      continent: 'EU',
+      asOrg: 'Example AS',
+    });
+  });
+
+  it('tags nothing for a project without it', () => {
+    expect(clientTags(edgeRequest(headers), { clientIdentity: false })).toEqual({});
   });
 });

@@ -1,5 +1,5 @@
 import { SemVer, gte } from 'semver';
-import type { IMetricsRepository } from './metrics.js';
+import { projectMetrics, type IMetricsRepository } from './metrics.js';
 import type { Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import { newestFirst } from './releases.js';
@@ -15,8 +15,9 @@ export class DocsService {
   ) {}
 
   async getArchivedVersions(project: Project): Promise<DocsVersion[]> {
-    const releases = await this.metrics.monitorAsyncFunction({ name: 'd1_get_docs_versions' }, () =>
-      this.releaseRepository.list(project.id),
+    const releases = await projectMetrics(this.metrics, project.id).monitorAsyncFunction(
+      { name: 'd1_get_docs_versions' },
+      () => this.releaseRepository.list(project.id),
     )();
 
     return latestPatchPerMinor(project, releases, FIRST_ARCHIVED).map((version) => toDocsVersion(version));

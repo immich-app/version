@@ -3,13 +3,16 @@ import { DocsService } from './docs-service.js';
 import { createInstallationToken } from './github-auth.js';
 import { GitHubRepository } from './github-repository.js';
 import {
+  clientTags,
   CloudflareMetricsRepository,
   getMetricsIdentity,
   HeaderMetricsProvider,
   InfluxMetricsProvider,
   Metric,
+  projectMetrics,
+  requestEdge,
 } from './metrics.js';
-import { legacyProject } from './projects.js';
+import { legacyProject, type Project } from './projects.js';
 import { ReleaseRepository } from './release-repository.js';
 import type { GitHubRelease, VersionResponse } from './types.js';
 import { VersionService } from './version-service.js';
@@ -57,7 +60,12 @@ export default {
     const headerProvider = new HeaderMetricsProvider();
     const influxProvider = createInfluxProvider(env);
     deferredRepository.defer(() => influxProvider.flush());
-    const metrics = new CloudflareMetricsRepository('version', request, [influxProvider, headerProvider]);
+    // Every series about a request carries its colo. The store keeps one
+    // sample per series per 20s, so a counter split by colo loses fewer
+    // requests than a single series would. continent and asOrg go only on the
+    // series that are grouped by them.
+    const edge = requestEdge(request);
+    const metrics = new CloudflareMetricsRepository('version', [influxProvider, headerProvider], { colo: edge.colo });
 
     const releaseRepository = new ReleaseRepository(env.VERSION_DB);
     const versionService = new VersionService(releaseRepository, metrics);
@@ -66,26 +74,22 @@ export default {
     const url = new URL(request.url);
 
     const handleCacheableRequest = async (
-      { name, tags, maxAge }: { name: string; tags?: Record<string, string>; maxAge: number },
+      { name, project, maxAge }: { name: string; project: Project; maxAge: number },
       getData: () => Promise<unknown>,
     ): Promise<Response> => {
       const cache = caches.default;
       const cacheKey = new Request(url.href, request);
+      const scoped = projectMetrics(metrics, project.id);
 
       if (env.ENVIRONMENT) {
         const cached = await cache.match(cacheKey);
         if (cached) {
-          metrics.push(
-            Metric.create(name)
-              .addTags(tags ?? {})
-              .addTag('cache', 'cdn')
-              .intField('invocation', 1),
-          );
+          scoped.push(Metric.create(name).addTag('cache', 'cdn').intField('invocation', 1));
           return new Response(cached.body, cached);
         }
       }
 
-      return await metrics.monitorAsyncFunction({ name, tags }, async (): Promise<Response> => {
+      return await scoped.monitorAsyncFunction({ name }, async (): Promise<Response> => {
         const response = jsonResponse(await getData(), 200, { 'Cache-Control': `public, max-age=${maxAge}` });
         if (env.ENVIRONMENT) {
           ctx.waitUntil(cache.put(cacheKey, response.clone()));
@@ -95,7 +99,10 @@ export default {
     };
 
     try {
-      const response = await metrics.monitorAsyncFunction({ name: 'handle_request' }, async () => {
+      // Every request, with all of its edge's tags: the dashboards group all
+      // traffic by continent ("Requests by Region") and by colo.
+      const handleRequest = { name: 'handle_request', tags: { continent: edge.continent, asOrg: edge.asOrg } };
+      const response = await metrics.monitorAsyncFunction(handleRequest, async () => {
         if (request.method === 'OPTIONS') {
           return new Response(null, {
             headers: {
@@ -113,14 +120,8 @@ export default {
           }
 
           case '/version': {
-            return await metrics.monitorAsyncFunction(
-              {
-                name: 'version_request',
-                tags: {
-                  client_ip: request.headers.get('CF-Connecting-IP') ?? '',
-                  user_agent: request.headers.get('User-Agent') ?? '',
-                },
-              },
+            return await projectMetrics(metrics, legacyProject.id).monitorAsyncFunction(
+              { name: 'version_request', tags: clientTags(request, legacyProject.analytics) },
               async (): Promise<Response> => {
                 // we assume stable for backwards compatibility
                 const channel = url.searchParams.get('channel') ?? 'stable';
@@ -144,8 +145,9 @@ export default {
           }
 
           case '/v1/docs/versions': {
-            return await handleCacheableRequest({ name: 'docs_versions_request', maxAge: 3600 }, () =>
-              docsService.getArchivedVersions(legacyProject),
+            return await handleCacheableRequest(
+              { name: 'docs_versions_request', project: legacyProject, maxAge: 3600 },
+              () => docsService.getArchivedVersions(legacyProject),
             );
           }
 
@@ -224,8 +226,9 @@ export default {
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const influxProvider = createInfluxProvider(env);
-    const request = new Request('https://localhost/cron');
-    const metrics = new CloudflareMetricsRepository('version', request, [influxProvider]);
+    // No request, so no geo tags. The runs' own series carry no project either:
+    // version_cron_sync_invocation is the heartbeat, whatever the run syncs.
+    const metrics = new CloudflareMetricsRepository('version', [influxProvider]);
 
     let githubToken: string | undefined;
     if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && env.GITHUB_APP_INSTALLATION_ID) {

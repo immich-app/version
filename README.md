@@ -38,4 +38,4 @@ The history of this worker was carried over from immich-app/services. Commit mes
 
 ## Observability
 
-Metrics go to FUTO's o11y stack under `project=version`. The Grafana dashboards, the alerts and the `version:*` recording rules are in [`o11y/`](o11y/README.md), published from `main` as a signed OCI bundle that o11y pulls.
+Metrics go to FUTO's o11y stack under `project=version`, and a series about one project carries its id as `version_project`. The Grafana dashboards, the alerts and the `version:*` recording rules are in [`o11y/`](o11y/README.md), published from `main` as a signed OCI bundle that o11y pulls.
