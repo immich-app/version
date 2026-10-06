@@ -90,6 +90,20 @@ async function fetchDocsVersions(): Promise<DocsVersion[]> {
   return await response.json();
 }
 
+// Tests ship nothing (no METRICS_URL), so InfluxMetricsProvider logs its lines instead.
+async function httpResponseLine(url: string, init?: RequestInit) {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    await exports.default.fetch(url, init);
+    const lines = logSpy.mock.calls.flatMap(([body]) => String(body).split('\n'));
+    const line = lines.find((l) => l.startsWith('version_http_response,'));
+    expect(line).toBeDefined();
+    return line!;
+  } finally {
+    logSpy.mockRestore();
+  }
+}
+
 async function createWebhookSignature(body: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -741,6 +755,29 @@ describe('Version Worker', () => {
     it('returns 404 for unknown paths', async () => {
       const response = await exports.default.fetch('https://example.com/unknown');
       expect(response.status).toBe(404);
+    });
+  });
+
+  describe('http_response metric', () => {
+    it('tags a known route and method as they are', async () => {
+      const line = await httpResponseLine('https://example.com/health');
+      expect(line).toContain(',method=GET,');
+      expect(line).toContain(',path=/health,');
+      expect(line).toContain(',status=200');
+    });
+
+    it('buckets an unknown path as other', async () => {
+      const line = await httpResponseLine('https://example.com/wp-login.php');
+      expect(line).toContain(',path=other,');
+      expect(line).toContain(',status=404');
+      expect(line).not.toContain('wp-login');
+    });
+
+    it('buckets an unknown method as other', async () => {
+      const line = await httpResponseLine('https://example.com/', { method: 'PROPFIND' });
+      expect(line).toContain(',method=other,');
+      expect(line).toContain(',path=/,');
+      expect(line).not.toContain('PROPFIND');
     });
   });
 });

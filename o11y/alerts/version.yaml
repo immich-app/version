@@ -1,0 +1,180 @@
+---
+# yaml-language-server: $schema=https://k8s-schemas.home-operations.com/grafana.integreatly.org/grafanaalertrulegroup_v1beta1.json
+#
+# Shipped as-is in the signed o11y bundle (o11y/render-manifests.sh).
+#
+# Every query uses VictoriaMetricsFleet, not the default VictoriaMetrics
+# datasource: that one only sees the o11y cluster's own tenant, so a rule on
+# version's series would sit at NoData -> OK through a real outage.
+#
+# `project: version` routes the alert to the rootly-version contact point. Never
+# add `heartbeat: rootly`: that label is o11y's own dead man's switch route.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaAlertRuleGroup
+metadata:
+  name: version
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  folderRef: version
+  interval: 1m
+  rules:
+    # The */30 cron emits version_cron_sync_invocation on every run, failed or
+    # not, so an empty hour plus `for` means at least two missed runs: the cron
+    # trigger, the worker, or the metrics push is gone.
+    #
+    # Deliberately unguarded, so it keeps firing for as long as the outage lasts.
+    # A "seen in the last week" guard would not hold: VictoriaMetricsFleet queries
+    # /select/multitenant, where vmselect only discovers tenants that received
+    # samples on the query's day, so the guard would resolve the alert at the
+    # next UTC midnight of a full outage. The alert ships in the same bundle as
+    # the version tenant's vmalert, so it only exists where version reports, and
+    # retiring the worker removes the bundle and this alert with it.
+    - uid: version-cron-heartbeat
+      title: Version worker sync cron stopped reporting
+      condition: B
+      for: 15m
+      labels:
+        project: version
+        severity: critical
+      annotations:
+        summary: The version worker's 30-minute release sync has not reported for over an hour.
+        description: >-
+          No version_cron_sync_invocation sample for an hour on this o11y instance (production
+          o11y receives env=prod and staging o11y env=dev; PR stages ship nothing). The Cloudflare cron
+          trigger stopped firing, the worker fails before it flushes metrics, or METRICS_URL /
+          METRICS_TOKEN no longer reach vmauth. Check the worker's cron events and `[cron]` logs
+          in the Cloudflare dashboard.
+      execErrState: Error
+      noDataState: OK
+      data:
+        - refId: A
+          datasourceUid: VictoriaMetricsFleet
+          queryType: ''
+          relativeTimeRange:
+            from: 3600
+            to: 0
+          model:
+            refId: A
+            datasource:
+              type: prometheus
+              uid: VictoriaMetricsFleet
+            expr: >-
+              absent_over_time(version_cron_sync_invocation{project="version", cluster="version"}[1h])
+            instant: true
+            range: false
+            intervalMs: 1000
+            maxDataPoints: 43200
+        - refId: B
+          datasourceUid: __expr__
+          queryType: ''
+          relativeTimeRange:
+            from: 3600
+            to: 0
+          model:
+            refId: B
+            type: threshold
+            datasource:
+              type: __expr__
+              uid: __expr__
+            expression: A
+            intervalMs: 1000
+            maxDataPoints: 43200
+            conditions:
+              - type: query
+                evaluator:
+                  type: gt
+                  params:
+                    - 0
+                operator:
+                  type: and
+                query:
+                  params:
+                    - A
+                reducer:
+                  type: last
+                  params: []
+    # The version tenant's vmalert (yucca-o11y vmalert-version.yaml) runs with
+    # notifier.blackhole, so nothing else reports a broken rule group, and the
+    # server analytics panels would just go blank.
+    # - version:requests_immich:count5m is written every 5m even with no traffic
+    #   (`or vector(0)`), so its absence means the vmalert stopped writing.
+    # - version:servers_unique:24h and :30d are derived from base series read back
+    #   out of tenant 7:1, so they also disappear when the base results are
+    #   misrouted or the derived groups fail. Their guards need immich-server
+    #   traffic in the last 2h, so a quiet staging stays green.
+    # - The two vmalert_* counters catch rule errors (a 422 from vmselect's
+    #   per-query memory cap, say) and remote-write drops. They assume o11y scrapes
+    #   the operator-made VMServiceScrape as job="vmalert-version"; check with
+    #   count(vmalert_iteration_total{job="vmalert-version"}) on Fleet. If the job
+    #   differs, those two lines return nothing and the freshness lines still work.
+    # The first line is unguarded like the heartbeat; the derived-series lines are
+    # guarded on immich-server traffic only.
+    - uid: version-recording-rules-stale
+      title: Version recording rules stopped writing
+      condition: B
+      for: 30m
+      labels:
+        project: version
+        severity: warning
+      annotations:
+        summary: The version tenant's vmalert has stopped writing version:* series, or its rules are erroring.
+        description: >-
+          Check the vmalert-version pod logs and its /api/v1/rules in the o11y namespace. Fill any
+          gap afterwards with vmalert -replay from the raw series.
+      execErrState: Error
+      noDataState: OK
+      data:
+        - refId: A
+          datasourceUid: VictoriaMetricsFleet
+          queryType: ''
+          relativeTimeRange:
+            from: 7200
+            to: 0
+          model:
+            refId: A
+            datasource:
+              type: prometheus
+              uid: VictoriaMetricsFleet
+            expr: >-
+              absent_over_time(version:requests_immich:count5m{project="version", cluster="version"}[30m])
+              or (absent_over_time(version:servers_unique:24h{project="version", cluster="version"}[30m])
+                and on () (max_over_time(version:requests_immich:count5m{project="version", cluster="version"}[2h]) > 0))
+              or (absent_over_time(version:servers_unique:30d{project="version", cluster="version"}[2h])
+                and on () (max_over_time(version:requests_immich:count5m{project="version", cluster="version"}[2h]) > 0))
+              or (sum(increase(vmalert_recording_rules_errors_total{job="vmalert-version"}[30m])) > 0)
+              or (sum(increase(vmalert_remotewrite_dropped_rows_total{job="vmalert-version"}[30m])) > 0)
+            instant: true
+            range: false
+            intervalMs: 1000
+            maxDataPoints: 43200
+        - refId: B
+          datasourceUid: __expr__
+          queryType: ''
+          relativeTimeRange:
+            from: 3600
+            to: 0
+          model:
+            refId: B
+            type: threshold
+            datasource:
+              type: __expr__
+              uid: __expr__
+            expression: A
+            intervalMs: 1000
+            maxDataPoints: 43200
+            conditions:
+              - type: query
+                evaluator:
+                  type: gt
+                  params:
+                    - 0
+                operator:
+                  type: and
+                query:
+                  params:
+                    - A
+                reducer:
+                  type: last
+                  params: []

@@ -16,6 +16,25 @@ locals {
   # Workers created through the API default to the legacy bundled usage model,
   # whose 50ms CPU cap the initial full release sync can exceed.
   usage_model = "standard"
+
+  # o11y identity labels (yucca-o11y docs/05-shipping-metrics-guide.md, "Labels"),
+  # stamped on every series by InfluxMetricsProvider; env comes from ENVIRONMENT.
+  # project;cluster is o11y's tenant key: its vminsert registry routes
+  # version;version to the version tenant, which the recording rules, the
+  # dashboards and the heartbeat alert read, so changing either strands the data.
+  metrics_identity = {
+    METRICS_PROJECT  = "version"
+    METRICS_CLUSTER  = "version"
+    METRICS_PROVIDER = "cloudflare"
+    METRICS_REGION   = "world"
+  }
+
+  # Only dev main and prod ship metrics, and they always do (see the
+  # precondition below). A PR stage carries the same identity as dev main
+  # (env=dev, nothing tells the two apart), so its series would merge into dev
+  # main's and its own cron would keep the staging heartbeat alert green while
+  # dev main's is dead.
+  ship_metrics = var.stage == ""
 }
 
 resource "terraform_data" "source_hash" {
@@ -62,7 +81,13 @@ resource "cloudflare_worker_version" "worker" {
       type = "secret_text"
       text = random_password.webhook_secret.result
     },
-    ], nonsensitive(var.o11y_vmauth_token != "") ? [
+    ], [
+    for name, value in local.metrics_identity : {
+      name = name
+      type = "plain_text"
+      text = value
+    }
+    ], local.ship_metrics ? [
     {
       name = "METRICS_URL"
       type = "plain_text"
@@ -88,6 +113,14 @@ resource "cloudflare_worker_version" "worker" {
     replace_triggered_by = [
       terraform_data.source_hash
     ]
+
+    # The o11y bundle's heartbeat alert watches dev main and prod no matter
+    # what, so deploying either without a token would page instead of quietly
+    # turning metrics off.
+    precondition {
+      condition     = !local.ship_metrics || nonsensitive(var.o11y_vmauth_token != "")
+      error_message = "TF_VAR_o11y_vmauth_token is required outside PR stages: dev main and prod always ship metrics to o11y."
+    }
   }
 }
 
