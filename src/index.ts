@@ -1,4 +1,3 @@
-import semver from 'semver';
 import { DeferredRepository } from './deferred.js';
 import { DocsService } from './docs-service.js';
 import { createInstallationToken } from './github-auth.js';
@@ -30,6 +29,8 @@ function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, 
 // http_response's method and path tags take only these values, anything else
 // becomes 'other': raw values would let any client (or a scanner probing
 // /wp-login.php) mint a new series per request in the shared o11y store.
+// /changelog is gone but stays listed, so leftover callers still show up under
+// its path, as 404s.
 const METRIC_ROUTES = new Set(['/', '/health', '/version', '/v1/docs/versions', '/changelog', '/webhook']);
 const METRIC_METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS']);
 
@@ -139,34 +140,6 @@ export default {
             );
           }
 
-          case '/changelog': {
-            const version = url.searchParams.get('version');
-            if (!version) {
-              return errorResponse('Missing required query parameter: version', 400);
-            }
-
-            if (!semver.valid(version)) {
-              return errorResponse('Invalid version format. Expected semver (e.g., 1.100.0 or v1.100.0)', 400);
-            }
-
-            // we assume stable for backwards compatibility
-            const channel = url.searchParams.get('channel') ?? 'stable';
-
-            if (!versionService.isValidChannel(channel)) {
-              return errorResponse('Invalid release channel. Expected "stable" or "rc"', 400);
-            }
-
-            const requestTags = {
-              version,
-              client_ip: request.headers.get('CF-Connecting-IP') ?? '',
-              user_agent: request.headers.get('User-Agent') ?? '',
-            };
-
-            return await handleCacheableRequest({ name: 'changelog_request', tags: requestTags, maxAge: 86_400 }, () =>
-              versionService.getChangelog(version, channel),
-            );
-          }
-
           case '/webhook': {
             if (request.method !== 'POST') {
               return errorResponse('Method Not Allowed', 405);
@@ -212,10 +185,6 @@ export default {
             const release: GitHubRelease = {
               id: releaseData.id,
               tag_name: releaseData.tag_name,
-              name: String(releaseData.name ?? ''),
-              url: String(releaseData.url ?? ''),
-              body: String(releaseData.body ?? ''),
-              created_at: String(releaseData.created_at ?? ''),
               published_at: String(releaseData.published_at ?? ''),
             };
 

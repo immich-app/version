@@ -544,7 +544,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Join semantics as panel 'Servers Up-to-date': 3h latest-version window inflates counts for up to 3h after a release. Only /version requests count toward activity here (not /changelog).",
+      "description": "Join semantics as panel 'Servers Up-to-date': 3h latest-version window inflates counts for up to 3h after a release.",
       "fieldConfig": {
         "defaults": {
           "custom": {

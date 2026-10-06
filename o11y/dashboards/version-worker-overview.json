@@ -407,7 +407,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "CDN miss = origin-served /changelog requests (no cache tag is emitted on misses; cache=\"\" matches series without the label). The cache=miss selector used before matched nothing. Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once.",
+      "description": "CDN miss = origin-served /v1/docs/versions requests (no cache tag is emitted on misses; cache=\"\" matches series without the label). Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -466,7 +466,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "CDN hit (/changelog)"
+              "options": "CDN hit (/v1/docs/versions)"
             },
             "properties": [
               {
@@ -481,7 +481,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "CDN miss (/changelog)"
+              "options": "CDN miss (/v1/docs/versions)"
             },
             "properties": [
               {
@@ -561,14 +561,14 @@
       },
       "targets": [
         {
-          "expr": "sum(count_over_time(version_changelog_request_invocation{cache=\"cdn\"}[$__interval]))",
-          "legendFormat": "CDN hit (/changelog)",
+          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"cdn\"}[$__interval]))",
+          "legendFormat": "CDN hit (/v1/docs/versions)",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_changelog_request_invocation{cache=\"\"}[$__interval]))",
-          "legendFormat": "CDN miss (/changelog)",
+          "expr": "sum(count_over_time(version_docs_versions_request_invocation{cache=\"\"}[$__interval]))",
+          "legendFormat": "CDN miss (/v1/docs/versions)",
           "refId": "B",
           "interval": "5m"
         },
@@ -790,27 +790,15 @@
           "interval": "5m"
         },
         {
-          "expr": "quantile(0.95, last_over_time(version_d1_get_changelog_duration[$__interval]))",
-          "legendFormat": "get_changelog p95",
-          "refId": "B",
-          "interval": "5m"
-        },
-        {
-          "expr": "quantile(0.95, last_over_time(version_d1_upsert_duration[$__interval]))",
-          "legendFormat": "upsert p95",
-          "refId": "C",
-          "interval": "5m"
-        },
-        {
           "expr": "quantile(0.95, last_over_time(version_d1_bulk_upsert_duration[$__interval]))",
           "legendFormat": "bulk_upsert p95",
-          "refId": "D",
+          "refId": "B",
           "interval": "5m"
         },
         {
           "expr": "quantile(0.95, last_over_time(version_webhook_upsert_duration[$__interval]))",
           "legendFormat": "webhook_upsert p95",
-          "refId": "E",
+          "refId": "C",
           "interval": "5m"
         }
       ],
@@ -905,21 +893,9 @@
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_d1_get_changelog_invocation[$__interval]))",
-          "legendFormat": "get_changelog",
-          "refId": "B",
-          "interval": "5m"
-        },
-        {
-          "expr": "sum(count_over_time(version_d1_upsert_invocation[$__interval]))",
-          "legendFormat": "upsert",
-          "refId": "C",
-          "interval": "5m"
-        },
-        {
           "expr": "sum(count_over_time(version_d1_bulk_upsert_invocation[$__interval]))",
           "legendFormat": "bulk_upsert",
-          "refId": "D",
+          "refId": "B",
           "interval": "5m"
         }
       ],
@@ -1013,21 +989,9 @@
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_d1_get_changelog_errors[$__interval])) or vector(0)",
-          "legendFormat": "get_changelog errors",
-          "refId": "B",
-          "interval": "5m"
-        },
-        {
-          "expr": "sum(count_over_time(version_d1_upsert_errors[$__interval])) or vector(0)",
-          "legendFormat": "upsert errors",
-          "refId": "C",
-          "interval": "5m"
-        },
-        {
           "expr": "sum(count_over_time(version_d1_bulk_upsert_errors[$__interval])) or vector(0)",
           "legendFormat": "bulk_upsert errors",
-          "refId": "D",
+          "refId": "B",
           "interval": "5m"
         }
       ],
@@ -1330,15 +1294,9 @@
           "interval": "5m"
         },
         {
-          "expr": "sum(count_over_time(version_cron_release_updated_count[$__interval]))",
-          "legendFormat": "releases updated",
-          "refId": "C",
-          "interval": "5m"
-        },
-        {
           "expr": "sum(sum_over_time(version_cron_full_sync_count[$__interval]))",
           "legendFormat": "nightly full sync",
-          "refId": "D",
+          "refId": "C",
           "interval": "5m"
         }
       ],
@@ -1513,16 +1471,9 @@
           "range": false
         },
         {
-          "expr": "sum(count_over_time(version_cron_release_updated_count[24h]))",
-          "legendFormat": "cron (content update)",
-          "refId": "C",
-          "instant": true,
-          "range": false
-        },
-        {
           "expr": "sum(sum_over_time(version_cron_full_sync_count[24h]))",
           "legendFormat": "cron (nightly full sync)",
-          "refId": "D",
+          "refId": "C",
           "instant": true,
           "range": false
         }
