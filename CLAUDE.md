@@ -36,7 +36,17 @@ deployment/
 
 ## Testing
 
-Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They import `env` and `exports` from `cloudflare:workers`, and create the D1 schema inline in `src/index.test.ts` rather than from `migrations/`. Keep the two in sync when changing the schema.
+Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They import `env` and `exports` from `cloudflare:workers`. `vitest.config.ts` reads `migrations/`, and `src/test/setup.ts` applies those files before every test file, the same way `d1.tf` does. `src/migrations.test.ts` seeds a row into every table, replays the migrations twice, and expects the schema and data to be unchanged.
+
+### Migrations
+
+`d1.tf` has no ledger. Whenever a migration file changes, and on every retry, it re-runs **every** file against the live database. A file stops at its first failing statement, and only "already exists" and "duplicate column" errors are tolerated. So every migration must be safe to re-run:
+
+- Use `CREATE TABLE/INDEX IF NOT EXISTS` and `DROP … IF EXISTS`.
+- `ALTER TABLE … ADD` goes last in its file, because its replay error stops the file.
+- No data copies, table rebuilds or `INSERT`s. Those need a real migration ledger first.
+
+The replay test fails on anything that errors, or that changes the schema or any row when re-run. Give every new table a seed row in `SEEDS` (`src/migrations.test.ts`); a test fails if one is missing.
 
 ## Deployment
 

@@ -1,20 +1,11 @@
 import { env, exports } from 'cloudflare:workers';
 import semver from 'semver';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubRepository } from './github-repository.js';
 import { MemoryCache } from './memory-cache.js';
 import type { DocsVersion } from './types.js';
 import { revalidationState, versionCache } from './version-service.js';
 import { verifyWebhookSignature } from './webhook.js';
-
-async function createSchema() {
-  await env.VERSION_DB.prepare(
-    "CREATE TABLE IF NOT EXISTS releases (id INTEGER PRIMARY KEY, tag_name TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', published_at TEXT NOT NULL DEFAULT '', major INTEGER NOT NULL, minor INTEGER NOT NULL, patch INTEGER NOT NULL, prerelease INTEGER)",
-  ).run();
-  await env.VERSION_DB.prepare(
-    'CREATE INDEX IF NOT EXISTS idx_releases_semver ON releases (major DESC, minor DESC, patch DESC)',
-  ).run();
-}
 
 const mockReleases = [
   {
@@ -172,10 +163,6 @@ describe('Webhook signature verification', () => {
 });
 
 describe('Version Worker', () => {
-  beforeAll(async () => {
-    await createSchema();
-  });
-
   beforeEach(async () => {
     versionCache.invalidate();
     revalidationState.inFlight = false;
@@ -783,10 +770,6 @@ describe('Version Worker', () => {
 });
 
 describe('Cron sync', () => {
-  beforeAll(async () => {
-    await createSchema();
-  });
-
   beforeEach(async () => {
     versionCache.invalidate();
     revalidationState.inFlight = false;
