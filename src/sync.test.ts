@@ -1,15 +1,14 @@
-import { env } from 'cloudflare:workers';
+import { env, exports } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorker } from './index.js';
 import { CloudflareMetricsRepository, type Metric } from './metrics.js';
-import { loadProjects, projects, type Project } from './projects.js';
+import { legacyProject, loadProjects, requireProject, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import type { ReleaseSource } from './sources.js';
 import { syncProjects } from './sync.js';
 import futoNotes from './test/fixtures/gitlab-futo-notes-releases.json';
 import {
   clearReleases,
-  fetchFrom,
   fullSyncedAt,
   gitlabReleasesPage,
   loggedLines,
@@ -35,7 +34,7 @@ const futoProjects = loadProjects({
     examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable'] } },
   })),
 });
-const registry = [...projects, ...futoProjects];
+const registry = [legacyProject, ...futoProjects];
 // Each project's repository id, which GitHub is asked by.
 const REPOS = { immich: 455_229_168, notes: 1, keyboard: 2 };
 type Id = keyof typeof REPOS;
@@ -466,22 +465,10 @@ describe('syncProjects', () => {
   });
 });
 
-describe('scheduled, with a GitLab project', () => {
-  // FUTO Notes' real GitLab releases (src/gitlab-source.test.ts), under a test-only id.
-  const [gitlabNotes] = loadProjects({
-    projects: [
-      {
-        id: 'gitlab-notes',
-        name: 'FUTO Notes',
-        source: { type: 'gitlab-releases', host: 'gitlab.futo.org', path: 'futo-notes/futo-notes' },
-        tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
-        channels: { stable: [] },
-        defaultChannel: 'stable',
-        analytics: { clientIdentity: false },
-        examples: { 'v1.8.0': { version: '1.8.0', channels: ['stable'] } },
-      },
-    ],
-  });
+describe('scheduled, with FUTO Notes on GitLab', () => {
+  // FUTO Notes as projects.json registers it, synced from its real GitLab
+  // releases (src/gitlab-source.test.ts).
+  const notes = requireProject('futo-notes');
   const GITLAB = 'https://gitlab.futo.org/api/v4/projects/futo-notes%2Ffuto-notes/releases';
   const URLS = { gitlab: GITLAB, github: 'https://api.github.com/repositories/455229168/releases' };
 
@@ -539,14 +526,14 @@ describe('scheduled, with a GitLab project', () => {
     vi.restoreAllMocks();
   });
 
-  // Runs a cron, */30 unless told otherwise, and returns its failures.
-  const run = async ({ cron = '*/30 * * * *', registry = [...projects, gitlabNotes], bindings = env } = {}) => {
+  // Runs a cron, */30 unless told otherwise, over Immich and FUTO Notes, and returns its failures.
+  const run = async ({ cron = '*/30 * * * *', registry = [legacyProject, notes], bindings = env } = {}) => {
     const handler = createWorker({ projects: registry });
     logged = await loggedLines(() => runCron(cron, { handler, bindings }));
     return seriesTags(logged).version_cron_error ?? [];
   };
 
-  it('syncs a public GitLab project without a token, and serves its newest version', async () => {
+  it('syncs FUTO Notes from its public GitLab project without a token, and serves its newest version', async () => {
     expect(await run()).toEqual([]);
 
     const gitlab = requests.filter(({ url }) => url.startsWith(GITLAB));
@@ -554,9 +541,9 @@ describe('scheduled, with a GitLab project', () => {
     expect(gitlab[0].headers.get('Authorization')).toBeNull();
     // Every release its pattern takes; v0.0.1-test isn't one.
     const tags = futoNotes.map(({ tag_name }) => tag_name).filter((tag) => tag !== 'v0.0.1-test');
-    const stored = await storedReleases('gitlab-notes');
+    const stored = await storedReleases('futo-notes');
     expect(new Set(stored.map(({ tag }) => tag))).toEqual(new Set(tags));
-    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+    expect(await fullSyncedAt('futo-notes')).not.toBeNull();
     expect(stored.find(({ tag }) => tag === 'v1.8.0')).toMatchObject({
       published_at: '2026-09-17T18:39:18.938Z',
       source_id: 'v1.8.0',
@@ -567,17 +554,36 @@ describe('scheduled, with a GitLab project', () => {
     requests = [];
     await run();
     expect(requests.map(({ url }) => url)).toContain(`${GITLAB}?per_page=20`);
-    expect(logged.join('\n')).toMatch(/^version_releases_written,\S*version_project=gitlab-notes\S* count=0i/m);
+    expect(logged.join('\n')).toMatch(/^version_releases_written,\S*version_project=futo-notes\S* count=0i/m);
 
-    const handler = createWorker({ projects: [...projects, gitlabNotes] });
-    const response = await fetchFrom(handler, 'https://example.com/v1/projects/gitlab-notes/version');
+    // Through the worker's own entrypoint, which serves what projects.json registers.
+    const response = await exports.default.fetch('https://example.com/v1/projects/futo-notes/version');
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      project: 'gitlab-notes',
+      project: 'futo-notes',
       channel: 'stable',
       version: '1.8.0',
       tag: 'v1.8.0',
       published_at: '2026-09-17T18:39:18.938Z',
+    });
+  });
+
+  it('serves v1.4.1 over v1.4.0, which was released a month after it', async () => {
+    // The listing on the day v1.4.0 came out. GitLab lists by release date, so it comes first.
+    const released = (release: (typeof futoNotes)[number]) => Date.parse(release.released_at);
+    const day = released(futoNotes.find(({ tag_name }) => tag_name === 'v1.4.0')!);
+    answers.gitlab = futoNotes.filter((release) => released(release) <= day);
+    expect(answers.gitlab.slice(0, 2)).toMatchObject([{ tag_name: 'v1.4.0' }, { tag_name: 'v1.4.1' }]);
+
+    expect(await run()).toEqual([]);
+
+    const response = await exports.default.fetch('https://example.com/v1/projects/futo-notes/version');
+    expect(await response.json()).toEqual({
+      project: 'futo-notes',
+      channel: 'stable',
+      version: '1.4.1',
+      tag: 'v1.4.1',
+      published_at: '2026-05-12T23:18:52.972Z',
     });
   });
 
@@ -590,18 +596,18 @@ describe('scheduled, with a GitLab project', () => {
     };
 
     expect(await run({ bindings })).toEqual([{ version_project: 'immich', error_class: 'auth' }]);
-    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+    expect(await fullSyncedAt('futo-notes')).not.toBeNull();
   });
 
   it("keeps one forge's rate limit from skipping the other's projects", async () => {
     answers.github = 429;
     expect(await run()).toEqual([{ version_project: 'immich', error_class: 'rate_limited' }]);
-    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+    expect(await fullSyncedAt('futo-notes')).not.toBeNull();
 
     await clearReleases();
     answers = { gitlab: 429, github: [release(1, 'v1.120.0')] };
-    expect(await run({ registry: [gitlabNotes, ...projects] })).toEqual([
-      { version_project: 'gitlab-notes', error_class: 'rate_limited' },
+    expect(await run({ registry: [notes, legacyProject] })).toEqual([
+      { version_project: 'futo-notes', error_class: 'rate_limited' },
     ]);
     expect(await storedTags('immich')).toEqual(['v1.120.0']);
   });
@@ -609,8 +615,8 @@ describe('scheduled, with a GitLab project', () => {
   it('counts a GitLab project that is missing or private as not found', async () => {
     answers.gitlab = 404;
 
-    expect(await run()).toEqual([{ version_project: 'gitlab-notes', error_class: 'not_found' }]);
-    expect(await fullSyncedAt('gitlab-notes')).toBeNull();
+    expect(await run()).toEqual([{ version_project: 'futo-notes', error_class: 'not_found' }]);
+    expect(await fullSyncedAt('futo-notes')).toBeNull();
     expect(await storedTags('immich')).toEqual(['v1.120.0']);
   });
 
@@ -648,29 +654,29 @@ describe('scheduled, with a GitLab project', () => {
       `${GITLAB}/v0.1.7`,
       `${GITLAB}/v0.1.6`,
     ]);
-    const tags = await storedTags('gitlab-notes');
+    const tags = await storedTags('futo-notes');
     expect(tags).toContain('v0.1.7');
     expect(tags).not.toContain('v1.0.0');
     expect(tags).not.toContain('v0.1.6');
-    expect(logged.join('\n')).toMatch(/^version_releases_deleted,\S*version_project=gitlab-notes\S* count=2i/m);
+    expect(logged.join('\n')).toMatch(/^version_releases_deleted,\S*version_project=futo-notes\S* count=2i/m);
   });
 
   it.each([
     ['skips a page', pagedAs('3'), []],
     ['names a page already listed', pagedAs('1'), []],
-    ['fails past its first page', pagedAs('2', 500), [{ version_project: 'gitlab-notes', error_class: 'http' }]],
+    ['fails past its first page', pagedAs('2', 500), [{ version_project: 'futo-notes', error_class: 'http' }]],
   ])('takes nothing down on a nightly sync whose GitLab listing %s', async (_, answer, errors) => {
     await run();
-    const stored = await storedReleases('gitlab-notes');
+    const stored = await storedReleases('futo-notes');
     expect(stored.map(({ tag }) => tag)).toContain('v1.0.0');
 
     answers.gitlab = answer;
     expect(await run({ cron: '0 3 * * *' })).toEqual(errors);
-    expect(await storedReleases('gitlab-notes')).toEqual(stored);
+    expect(await storedReleases('futo-notes')).toEqual(stored);
 
     // The listing without v1.0.0, complete, does take it down.
     answers.gitlab = withoutV100;
     expect(await run({ cron: '0 3 * * *' })).toEqual([]);
-    expect(await storedTags('gitlab-notes')).toEqual(stored.map(({ tag }) => tag).filter((tag) => tag !== 'v1.0.0'));
+    expect(await storedTags('futo-notes')).toEqual(stored.map(({ tag }) => tag).filter((tag) => tag !== 'v1.0.0'));
   });
 });

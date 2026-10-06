@@ -23,6 +23,25 @@
         "v1.4.0-dev": null,
         "v0.5-dev": null
       }
+    },
+    {
+      "id": "futo-notes",
+      "name": "FUTO Notes",
+      "source": { "type": "gitlab-releases", "host": "gitlab.futo.org", "path": "futo-notes/futo-notes" },
+      "tags": { "pattern": "^v(?<version>\\d+\\.\\d+\\.\\d+)$", "scheme": "semver" },
+      "channels": { "stable": [] },
+      "defaultChannel": "stable",
+      "analytics": { "clientIdentity": false },
+      "examples": {
+        "v1.8.0": { "version": "1.8.0", "channels": ["stable"] },
+        "v1.4.1": { "version": "1.4.1", "channels": ["stable"] },
+        "v1.4.0": { "version": "1.4.0", "channels": ["stable"] },
+        "v1.1.18": { "version": "1.1.18", "channels": ["stable"] },
+        "v1.7.2-8": null,
+        "v1.7.2-milkdown.3": null,
+        "v0.0.1-test": null,
+        "v1.0": null
+      }
     }
   ]
 }

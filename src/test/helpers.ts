@@ -1,7 +1,6 @@
 import { createExecutionContext, createScheduledController, waitOnExecutionContext } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { vi } from 'vitest';
-import worker from '../index.js';
 
 export interface SeedRelease {
   id: number;
@@ -140,8 +139,16 @@ export async function publishRelease(
 
 type ScheduledHandler = { scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> };
 
-// Runs a worker's scheduled handler for a cron expression and waits for what it deferred.
-export async function runCron(cron: string, { handler = worker as ScheduledHandler, bindings = env } = {}) {
+/**
+ * Runs a worker's scheduled handler for a cron expression and waits for what it
+ * deferred. There is no default handler: a run syncs every project its worker
+ * registers, so a test passes one built over its own registry, which
+ * registering a project in projects.json then leaves alone.
+ */
+export async function runCron(
+  cron: string,
+  { handler, bindings = env }: { handler: ScheduledHandler; bindings?: Env },
+) {
   const ctx = createExecutionContext();
   await handler.scheduled(createScheduledController({ cron }), bindings, ctx);
   await waitOnExecutionContext(ctx);

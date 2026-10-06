@@ -42,7 +42,7 @@ Tests run in the Workers runtime through `@cloudflare/vitest-plugin`. They impor
 
 `src/legacy-routes.test.ts` pins `/version` and `/v1/docs/versions` byte for byte: status, body text and headers. Immich servers and the docs site depend on them, so a change there is a breaking change, not a test to update.
 
-Tests never edit `projects.json`. `createWorker({ projects })` (`src/index.ts`) builds the worker over another registry, and `src/test/helpers.ts` calls its handlers the way Cloudflare does (`runCron`, `fetchFrom`). `src/sync.test.ts` runs the crons over three projects that way.
+Tests never edit `projects.json`. `createWorker({ projects })` (`src/index.ts`) builds the worker over another registry, and `src/test/helpers.ts` calls its handlers the way Cloudflare does (`runCron`, `fetchFrom`). `runCron` has no default worker, so every cron a test runs syncs a registry the test chose, and registering a project changes nothing a test fetches. `src/sync.test.ts` runs the crons over three projects that way, and syncs the registered FUTO Notes entry from a fixture of its real GitLab listing (`src/test/fixtures/`).
 
 ### Migrations
 
@@ -56,13 +56,13 @@ The replay test fails on anything that errors, or that changes the schema or any
 
 ## Projects
 
-`projects.json` registers the projects whose releases the service tracks. Only Immich is registered so far; it is also `legacyProject`, which `/version` and `/v1/docs/versions` serve. The crons sync every registered project and `/v1/projects/{id}/version` serves any of them. `src/projects.ts` validates the registry, compiles its tag patterns and provides `normalize(project, tag)`. `src/version-schemes.ts` parses and orders versions.
+`projects.json` registers the projects whose releases the service tracks: Immich (`immich`) and FUTO Notes (`futo-notes`, from gitlab.futo.org). Immich is also `legacyProject`, which `/version` and `/v1/docs/versions` serve. README.md's Projects section is the onboarding guide. The crons sync every registered project and `/v1/projects/{id}/version` serves any of them. `src/projects.ts` validates the registry, compiles its tag patterns and provides `normalize(project, tag)`. `src/version-schemes.ts` parses and orders versions.
 
 - An id (`^[a-z][a-z0-9-]{1,31}$`) is permanent: it is the URL segment, the D1 key and the `version_project` metric tag.
 - `source` is a GitHub repository's releases (`github-releases`: `repo`, plus its `repoId`), or a public GitLab project's (`gitlab-releases`: `host`, such as `gitlab.futo.org`, and the project's full `path`).
 - `tags.pattern` must match the whole tag and capture the version in a group named `version`, which `tags.scheme` (`semver` or `dotted`) parses. Any other tag is not the project's.
 - A channel serves every stable release, plus the prereleases whose label it lists (`*` lists them all). The label is the first prerelease identifier's leading letters, lowercased, so `rc.2` and `rc1` are both `rc`. A prerelease no channel lists is never served.
-- Versions are ordered by their scheme, not by release date. Identifiers of letters then digits compare numerically (`rc2` < `rc10`), unlike plain semver.
+- Versions are ordered by their scheme, not by release date: FUTO Notes released v1.4.0 a month after v1.4.1. Identifiers of letters then digits compare numerically (`rc2` < `rc10`), unlike plain semver.
 - `examples` maps real tags to the version and channels they must normalize to, or `null` for a tag the project ignores. `src/projects.test.ts` checks every one, and CI runs it as its own "Validate projects.json" step.
 - `projects.schema.json` is only for editors; the validator in `src/projects.ts` is the check that counts. A test keeps their ids, schemes and source types in step.
 - `analytics.clientIdentity` puts client IPs and user agents on request metrics. Only the projects in the test's `CLIENT_IDENTITY_PROJECTS` may set it.
