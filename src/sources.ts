@@ -4,6 +4,9 @@ import type { ProjectRelease } from './types.js';
 // can't hold a cron run until Cloudflare kills it.
 export const REQUEST_TIMEOUT_MS = 10_000;
 
+// The User-Agent every forge request sends.
+export const USER_AGENT = 'futo-version-service';
+
 // The most releases one sync asks its source about (confirmRetracted()), a
 // request each, so a listing that leaves out many can't fan out into hundreds
 // of requests. The rest wait for the next full sync.
@@ -16,8 +19,9 @@ export const RETRACTION_CHECK_BUDGET_MS = 20_000;
 
 export interface FetchedReleases {
   releases: ProjectRelease[];
-  // False when the listing stopped at its page cap, so older releases exist
-  // that it didn't reach.
+  // False when the listing stopped before its end (at its page cap, or at a
+  // page that didn't lead on to the next one), so releases may exist that it
+  // didn't reach.
   complete: boolean;
 }
 
@@ -32,8 +36,9 @@ export interface ConfirmOptions extends FetchOptions {
 }
 
 /**
- * Where a project's releases come from (`source` in projects.json). Drafts are
- * never returned. Both listings put the newest release first.
+ * Where a project's releases come from (`source` in projects.json). Drafts, and
+ * releases that aren't out yet, are never returned. Both listings put the
+ * newest release first.
  */
 export interface ReleaseSource {
   // Sources that share a rate limit share this key, so a run stops asking them

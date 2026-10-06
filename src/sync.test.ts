@@ -6,7 +6,18 @@ import { loadProjects, projects, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import type { ReleaseSource } from './sources.js';
 import { syncProjects } from './sync.js';
-import { clearReleases, fullSyncedAt, runCron, seriesTags, storedTags } from './test/helpers.js';
+import futoNotes from './test/fixtures/gitlab-futo-notes-releases.json';
+import {
+  clearReleases,
+  fetchFrom,
+  fullSyncedAt,
+  gitlabReleasesPage,
+  loggedLines,
+  runCron,
+  seriesTags,
+  storedReleases,
+  storedTags,
+} from './test/helpers.js';
 import type { ProjectRelease } from './types.js';
 import { versionCaches, VersionService } from './version-service.js';
 
@@ -452,5 +463,214 @@ describe('syncProjects', () => {
     expect(flushed[2]).toContain('keyboard version_d1_release_count');
     expect(repository.list).toHaveBeenCalledWith('keyboard');
     expect(error).toHaveBeenCalledWith('[cron] notes: release stats failed (timeout):', expect.anything());
+  });
+});
+
+describe('scheduled, with a GitLab project', () => {
+  // FUTO Notes' real GitLab releases (src/gitlab-source.test.ts), under a test-only id.
+  const [gitlabNotes] = loadProjects({
+    projects: [
+      {
+        id: 'gitlab-notes',
+        name: 'FUTO Notes',
+        source: { type: 'gitlab-releases', host: 'gitlab.futo.org', path: 'futo-notes/futo-notes' },
+        tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
+        channels: { stable: [] },
+        defaultChannel: 'stable',
+        analytics: { clientIdentity: false },
+        examples: { 'v1.8.0': { version: '1.8.0', channels: ['stable'] } },
+      },
+    ],
+  });
+  const GITLAB = 'https://gitlab.futo.org/api/v4/projects/futo-notes%2Ffuto-notes/releases';
+  const URLS = { gitlab: GITLAB, github: 'https://api.github.com/repositories/455229168/releases' };
+
+  // How each forge answers: its releases, an error status or, for GitLab, a
+  // response to each request.
+  let answers: {
+    gitlab: readonly unknown[] | number | ((url: URL) => Response);
+    github: readonly unknown[] | number;
+  };
+  // How GitLab answers a request for one release, by its tag, where a test
+  // says. Otherwise it is the release GitLab lists, or a 404.
+  let gitlabReleases: Record<string, Response>;
+  let requests: Request[];
+  let logged: string[];
+
+  beforeEach(async () => {
+    versionCaches.clear();
+    await clearReleases();
+    answers = { gitlab: futoNotes, github: [release(1, 'v1.120.0')] };
+    gitlabReleases = {};
+    requests = [];
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const forge = (['gitlab', 'github'] as const).find((key) => request.url.startsWith(URLS[key]));
+      if (!forge) {
+        return Promise.reject(new Error(`unexpected fetch: ${request.url}`));
+      }
+      // One of GitLab's releases, by its tag.
+      const tag = forge === 'gitlab' ? /^\/([^/?]+)$/.exec(request.url.slice(GITLAB.length))?.[1] : undefined;
+      if (tag !== undefined && gitlabReleases[decodeURIComponent(tag)]) {
+        return Promise.resolve(gitlabReleases[decodeURIComponent(tag)]);
+      }
+      const answer = answers[forge];
+      if (typeof answer === 'number') {
+        return Promise.resolve(new Response(null, { status: answer }));
+      }
+      if (typeof answer === 'function') {
+        return Promise.resolve(answer(new URL(request.url)));
+      }
+      if (tag !== undefined) {
+        const listed = (answer as { tag_name: string }[]).find(({ tag_name }) => tag_name === decodeURIComponent(tag));
+        return Promise.resolve(
+          listed ? Response.json(listed) : Response.json({ message: '404 Not Found' }, { status: 404 }),
+        );
+      }
+      return Promise.resolve(
+        forge === 'gitlab' ? gitlabReleasesPage(request.url, answer) : Response.json(answer.slice(0, 20)),
+      );
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Runs a cron, */30 unless told otherwise, and returns its failures.
+  const run = async ({ cron = '*/30 * * * *', registry = [...projects, gitlabNotes], bindings = env } = {}) => {
+    const handler = createWorker({ projects: registry });
+    logged = await loggedLines(() => runCron(cron, { handler, bindings }));
+    return seriesTags(logged).version_cron_error ?? [];
+  };
+
+  it('syncs a public GitLab project without a token, and serves its newest version', async () => {
+    expect(await run()).toEqual([]);
+
+    const gitlab = requests.filter(({ url }) => url.startsWith(GITLAB));
+    expect(gitlab.map(({ url }) => url)).toEqual([`${GITLAB}?per_page=100&page=1`]);
+    expect(gitlab[0].headers.get('Authorization')).toBeNull();
+    // Every release its pattern takes; v0.0.1-test isn't one.
+    const tags = futoNotes.map(({ tag_name }) => tag_name).filter((tag) => tag !== 'v0.0.1-test');
+    const stored = await storedReleases('gitlab-notes');
+    expect(new Set(stored.map(({ tag }) => tag))).toEqual(new Set(tags));
+    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+    expect(stored.find(({ tag }) => tag === 'v1.8.0')).toMatchObject({
+      published_at: '2026-09-17T18:39:18.938Z',
+      source_id: 'v1.8.0',
+      forge_prerelease: null,
+    });
+
+    // The next run lists the newest 20, and finds nothing to write.
+    requests = [];
+    await run();
+    expect(requests.map(({ url }) => url)).toContain(`${GITLAB}?per_page=20`);
+    expect(logged.join('\n')).toMatch(/^version_releases_written,\S*version_project=gitlab-notes\S* count=0i/m);
+
+    const handler = createWorker({ projects: [...projects, gitlabNotes] });
+    const response = await fetchFrom(handler, 'https://example.com/v1/projects/gitlab-notes/version');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      project: 'gitlab-notes',
+      channel: 'stable',
+      version: '1.8.0',
+      tag: 'v1.8.0',
+      published_at: '2026-09-17T18:39:18.938Z',
+    });
+  });
+
+  it("syncs a GitLab project when GitHub's token can't be minted", async () => {
+    const bindings = {
+      ...env,
+      GITHUB_APP_ID: '1',
+      GITHUB_APP_PRIVATE_KEY: 'not a key',
+      GITHUB_APP_INSTALLATION_ID: '2',
+    };
+
+    expect(await run({ bindings })).toEqual([{ version_project: 'immich', error_class: 'auth' }]);
+    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+  });
+
+  it("keeps one forge's rate limit from skipping the other's projects", async () => {
+    answers.github = 429;
+    expect(await run()).toEqual([{ version_project: 'immich', error_class: 'rate_limited' }]);
+    expect(await fullSyncedAt('gitlab-notes')).not.toBeNull();
+
+    await clearReleases();
+    answers = { gitlab: 429, github: [release(1, 'v1.120.0')] };
+    expect(await run({ registry: [gitlabNotes, ...projects] })).toEqual([
+      { version_project: 'gitlab-notes', error_class: 'rate_limited' },
+    ]);
+    expect(await storedTags('immich')).toEqual(['v1.120.0']);
+  });
+
+  it('counts a GitLab project that is missing or private as not found', async () => {
+    answers.gitlab = 404;
+
+    expect(await run()).toEqual([{ version_project: 'gitlab-notes', error_class: 'not_found' }]);
+    expect(await fullSyncedAt('gitlab-notes')).toBeNull();
+    expect(await storedTags('immich')).toEqual(['v1.120.0']);
+  });
+
+  // GitLab's listing once v1.0.0 is taken down.
+  const withoutV100 = futoNotes.filter(({ tag_name }) => tag_name !== 'v1.0.0');
+  // Page 1 of that listing names `next` after it. Any other page is the last,
+  // or fails with `status`.
+  const pagedAs =
+    (next: string, status?: number) =>
+    (url: URL): Response => {
+      if (url.searchParams.get('page') === '1') {
+        return Response.json(withoutV100, { headers: { 'x-next-page': next } });
+      }
+      return status ? new Response(null, { status }) : Response.json([], { headers: { 'x-next-page': '' } });
+    };
+
+  it('deletes the releases a nightly GitLab listing left out once GitLab confirms they are gone, and keeps the rest', async () => {
+    await run();
+    // v1.0.0 was deleted. GitLab still has v0.1.7, and v0.1.6 is upcoming again.
+    answers.gitlab = futoNotes.filter(({ tag_name }) => !['v1.0.0', 'v0.1.7', 'v0.1.6'].includes(tag_name));
+    const [v017, v016] = ['v0.1.7', 'v0.1.6'].map((tag) => futoNotes.find(({ tag_name }) => tag_name === tag)!);
+    gitlabReleases['v0.1.7'] = Response.json(v017);
+    gitlabReleases['v0.1.6'] = Response.json({
+      ...v016,
+      released_at: '2099-01-01T00:00:00.000Z',
+      upcoming_release: true,
+    });
+    requests = [];
+
+    expect(await run({ cron: '0 3 * * *' })).toEqual([]);
+
+    expect(requests.map(({ url }) => url).filter((url) => url.startsWith(GITLAB))).toEqual([
+      `${GITLAB}?per_page=100&page=1`,
+      `${GITLAB}/v1.0.0`,
+      `${GITLAB}/v0.1.7`,
+      `${GITLAB}/v0.1.6`,
+    ]);
+    const tags = await storedTags('gitlab-notes');
+    expect(tags).toContain('v0.1.7');
+    expect(tags).not.toContain('v1.0.0');
+    expect(tags).not.toContain('v0.1.6');
+    expect(logged.join('\n')).toMatch(/^version_releases_deleted,\S*version_project=gitlab-notes\S* count=2i/m);
+  });
+
+  it.each([
+    ['skips a page', pagedAs('3'), []],
+    ['names a page already listed', pagedAs('1'), []],
+    ['fails past its first page', pagedAs('2', 500), [{ version_project: 'gitlab-notes', error_class: 'http' }]],
+  ])('takes nothing down on a nightly sync whose GitLab listing %s', async (_, answer, errors) => {
+    await run();
+    const stored = await storedReleases('gitlab-notes');
+    expect(stored.map(({ tag }) => tag)).toContain('v1.0.0');
+
+    answers.gitlab = answer;
+    expect(await run({ cron: '0 3 * * *' })).toEqual(errors);
+    expect(await storedReleases('gitlab-notes')).toEqual(stored);
+
+    // The listing without v1.0.0, complete, does take it down.
+    answers.gitlab = withoutV100;
+    expect(await run({ cron: '0 3 * * *' })).toEqual([]);
+    expect(await storedTags('gitlab-notes')).toEqual(stored.map(({ tag }) => tag).filter((tag) => tag !== 'v1.0.0'));
   });
 });

@@ -5,6 +5,7 @@ import {
   REQUEST_TIMEOUT_MS,
   requestSignal,
   SourceHttpError,
+  USER_AGENT,
   type ConfirmOptions,
   type FetchedReleases,
   type FetchOptions,
@@ -123,7 +124,7 @@ export class GitHubReleasesSource implements ReleaseSource {
   private async buildHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
-      'User-Agent': 'futo-version-service',
+      'User-Agent': USER_AGENT,
     };
 
     const token = await this.credentials.token();
