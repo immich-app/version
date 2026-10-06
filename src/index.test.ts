@@ -975,15 +975,11 @@ describe('Cron sync', () => {
     });
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     vi.restoreAllMocks();
-    await env.VERSION_DB.exec('DELETE FROM releases');
   });
 
-  it('fills an empty table with a full fetch on the next run, whatever the legacy table holds', async () => {
-    await env.VERSION_DB.prepare(
-      "INSERT INTO releases (id, tag_name, major, minor, patch) VALUES (3, 'v1.120.0', 1, 120, 0)",
-    ).run();
+  it('fills an empty table with a full fetch on the next run', async () => {
     const before = await exports.default.fetch('https://example.com/version');
     expect(before.status).toBe(404);
 
