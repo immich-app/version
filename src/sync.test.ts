@@ -1,5 +1,5 @@
 import { env, exports } from 'cloudflare:workers';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorker } from './index.js';
 import { CloudflareMetricsRepository, type Metric } from './metrics.js';
 import { legacyProject, loadProjects, requireProject, type Project } from './projects.js';
@@ -10,6 +10,8 @@ import futoNotes from './test/fixtures/gitlab-futo-notes-releases.json';
 import {
   clearReleases,
   fullSyncedAt,
+  githubAppAnswer,
+  githubAppPrivateKey,
   gitlabReleasesPage,
   loggedLines,
   runCron,
@@ -79,7 +81,11 @@ describe('scheduled', () => {
   let releaseAnswers: Record<string, Answer>;
   // Called with each request GitHub has answered from a repository's releases.
   let afterAnswer: (url: string) => void;
+  // The GitHub App's installation on each owner, when a run has its bindings.
+  let installations: Record<string, number>;
   let requested: string[];
+  // The Authorization each request for a repository's releases was made with.
+  let authorizations: Map<string, string | null>;
   // What had been logged when each request was made.
   let loggedBefore: Map<string, string>;
   let logged: string[];
@@ -90,7 +96,9 @@ describe('scheduled', () => {
     answers = { immich: [release(1, 'v1.120.0')], notes: [release(2, 'v1.0.0')], keyboard: [release(3, 'v2.0.0')] };
     releaseAnswers = {};
     afterAnswer = () => {};
+    installations = { 'immich-app': 1, 'futo-org': 2 };
     requested = [];
+    authorizations = new Map();
     logged = [];
     loggedBefore = new Map();
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -98,8 +106,14 @@ describe('scheduled', () => {
       logged.push(String(line));
     });
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
-      const { url, signal } = new Request(input, init);
+      const request = new Request(input, init);
+      const app = githubAppAnswer(request, installations);
+      if (app) {
+        return Promise.resolve(app);
+      }
+      const { url, signal } = request;
       requested.push(url);
+      authorizations.set(url, request.headers.get('Authorization'));
       loggedBefore.set(url, logged.join('\n'));
       const id = (Object.keys(REPOS) as Id[]).find((key) => url.startsWith(releasesOf(key)));
       const answer = id ? (releaseAnswers[url] ?? answers[id]) : undefined;
@@ -376,12 +390,7 @@ describe('scheduled', () => {
   });
 
   it('fails every GitHub project as an auth error when the token cannot be minted, and still reports the run', async () => {
-    const bindings = {
-      ...env,
-      GITHUB_APP_ID: '1',
-      GITHUB_APP_PRIVATE_KEY: 'not a key',
-      GITHUB_APP_INSTALLATION_ID: '2',
-    };
+    const bindings = { ...env, GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: 'not a key' };
 
     await run('*/30 * * * *', {}, bindings);
 
@@ -399,6 +408,73 @@ describe('scheduled', () => {
 
     expect(series().version_cron_full_sync).toEqual([{}, {}]);
     expect(series().version_cron_sync).toBeUndefined();
+  });
+
+  describe('through the GitHub App', () => {
+    let bindings: Env;
+
+    beforeAll(async () => {
+      bindings = { ...env, GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: await githubAppPrivateKey() };
+    });
+
+    it("reads each owner's repositories with its own installation's token", async () => {
+      await run('*/30 * * * *', {}, bindings);
+
+      expect(errors()).toEqual([]);
+      expect(Object.fromEntries(authorizations)).toEqual({
+        [full('immich')]: 'Bearer token-1',
+        [full('notes')]: 'Bearer token-2',
+        [full('keyboard')]: 'Bearer token-2',
+      });
+    });
+
+    it("skips the projects of an owner whose installation hit its rate limit, and no other owner's", async () => {
+      answers.immich = 429;
+      await run('*/30 * * * *', {}, bindings);
+
+      expect(errors()).toEqual([{ version_project: 'immich', error_class: 'rate_limited' }]);
+      expect(await storedTags('notes')).toEqual(['v1.0.0']);
+      expect(await storedTags('keyboard')).toEqual(['v2.0.0']);
+
+      await clearReleases();
+      answers = { immich: [release(1, 'v1.120.0')], notes: 429, keyboard: [release(3, 'v2.0.0')] };
+      logged = [];
+      requested = [];
+      await run('*/30 * * * *', {}, bindings);
+
+      expect(errors()).toEqual([
+        { version_project: 'notes', error_class: 'rate_limited' },
+        { version_project: 'keyboard', error_class: 'rate_limited' },
+      ]);
+      expect(requested).toEqual([full('immich'), full('notes')]);
+    });
+
+    it("confirms a release the nightly listing left out with its owner's installation's token", async () => {
+      answers.notes = [release(2, 'v1.0.0'), release(1, 'v0.9.0')];
+      await run('*/30 * * * *', {}, bindings);
+      answers.notes = [release(2, 'v1.0.0')];
+      authorizations = new Map();
+
+      await run('0 3 * * *', {}, bindings);
+
+      expect(errors()).toEqual([]);
+      expect(authorizations.get(full('notes'))).toBe('Bearer token-2');
+      expect(authorizations.get(releaseOf('notes', 1))).toBe('Bearer token-2');
+      expect(await storedTags('notes')).toEqual(['v1.0.0']);
+    });
+
+    it("fails the projects of an owner the app isn't installed on as auth errors, and syncs the rest", async () => {
+      installations = { 'immich-app': 1 };
+
+      await run('*/30 * * * *', {}, bindings);
+
+      expect(errors()).toEqual([
+        { version_project: 'notes', error_class: 'auth' },
+        { version_project: 'keyboard', error_class: 'auth' },
+      ]);
+      expect(requested).toEqual([full('immich')]);
+      expect(await storedTags('immich')).toEqual(['v1.120.0']);
+    });
   });
 });
 
@@ -588,12 +664,7 @@ describe('scheduled, with FUTO Notes on GitLab', () => {
   });
 
   it("syncs a GitLab project when GitHub's token can't be minted", async () => {
-    const bindings = {
-      ...env,
-      GITHUB_APP_ID: '1',
-      GITHUB_APP_PRIVATE_KEY: 'not a key',
-      GITHUB_APP_INSTALLATION_ID: '2',
-    };
+    const bindings = { ...env, GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: 'not a key' };
 
     expect(await run({ bindings })).toEqual([{ version_project: 'immich', error_class: 'auth' }]);
     expect(await fullSyncedAt('futo-notes')).not.toBeNull();

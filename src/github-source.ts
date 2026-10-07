@@ -145,7 +145,7 @@ const SECONDARY_RATE_LIMIT = /\bsecondary rate limit\b/i;
  * leaves requests remaining. Any other 403 is a denied request. See
  * https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors
  */
-async function errorFromResponse(response: Response): Promise<Error> {
+export async function errorFromResponse(response: Response): Promise<Error> {
   const { status, headers } = response;
   // Only a 403's message tells a secondary rate limit from a denied request.
   let message = '';

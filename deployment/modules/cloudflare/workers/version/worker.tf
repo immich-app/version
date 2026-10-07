@@ -61,20 +61,17 @@ resource "cloudflare_worker_version" "worker" {
       type = "d1"
       id   = cloudflare_d1_database.version.id
     },
+    # The version service's own GitHub App. The worker finds its installation
+    # on each repository's owner, so no installation id is bound.
     {
       name = "GITHUB_APP_ID"
       type = "plain_text"
-      text = var.github_app_readonly_id
+      text = var.github_app_version_id
     },
     {
       name = "GITHUB_APP_PRIVATE_KEY"
       type = "secret_text"
-      text = var.github_app_readonly_pem_file
-    },
-    {
-      name = "GITHUB_APP_INSTALLATION_ID"
-      type = "plain_text"
-      text = var.github_app_readonly_installation_id
+      text = var.github_app_version_pem_file
     },
     {
       name = "GITHUB_WEBHOOK_SECRET"

@@ -154,6 +154,42 @@ export async function runCron(
   await waitOnExecutionContext(ctx);
 }
 
+// A GitHub App private key, as the PKCS#8 PEM deployment/.env binds, that
+// octokit can sign the app's JWTs with.
+export async function githubAppPrivateKey(): Promise<string> {
+  const { privateKey } = (await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true,
+    ['sign', 'verify'],
+  )) as CryptoKeyPair;
+  const der = (await crypto.subtle.exportKey('pkcs8', privateKey)) as ArrayBuffer;
+  const base64 = btoa(String.fromCodePoint(...new Uint8Array(der)));
+  return `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----\n`;
+}
+
+const INSTALLATION_URL = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/[^/]+\/installation$/;
+const ACCESS_TOKENS_URL = /^https:\/\/api\.github\.com\/app\/installations\/(\d+)\/access_tokens$/;
+
+/**
+ * Answers a GitHub App's own requests the way GitHub does: a repository's
+ * installation, by its owner in `installations` (a 404 for an owner missing
+ * there), and an installation's token, which is `token-<installation id>`.
+ * Returns undefined for any other request.
+ */
+export function githubAppAnswer(request: Request, installations: Record<string, number>): Response | undefined {
+  const owner = INSTALLATION_URL.exec(request.url)?.[1];
+  if (owner !== undefined && request.method === 'GET') {
+    const id = installations[owner];
+    return id === undefined ? Response.json({ message: 'Not Found' }, { status: 404 }) : Response.json({ id });
+  }
+  const installation = ACCESS_TOKENS_URL.exec(request.url)?.[1];
+  if (installation !== undefined && request.method === 'POST') {
+    const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    return Response.json({ token: `token-${installation}`, expires_at: expiresAt }, { status: 201 });
+  }
+  return undefined;
+}
+
 /**
  * Answers a GitLab releases listing the way GitLab's offset pagination does:
  * `per_page` (default 20) of `releases` from `page` (default 1), in the order
