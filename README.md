@@ -12,7 +12,40 @@ Cloudflare Worker that serves the latest release of each FUTO project it tracks,
 
 `/v1/projects/{id}/version` answers `{"project","channel","version","tag","published_at"}`, where `version` is the version in the tag (`3.3.0`) and `tag` the tag itself (`v3.3.0`). An unregistered id is a 404 `{"error":"Unknown project"}`, a channel the project lacks a 400 `{"error":"Invalid release channel","channels":[…]}`, and an empty channel a 404 `{"error":"No releases found"}`. It takes GET and HEAD, and a 200 may be cached for 5 minutes.
 
-Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. A project's releases come from its GitHub repository or, read without a token, its public GitLab project. Immich's release webhook stores its releases as they are published; GitLab projects have no webhook.
+Releases are stored in D1 per project (see [Projects](#projects)) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. A project's releases come from its GitHub repository or, read without a token, its public GitLab project. Immich's release webhook stores its releases as they are published; GitLab projects have no webhook.
+
+## Projects
+
+[`projects.json`](projects.json) registers the projects the service tracks:
+
+| Id           | Project                                                                         | Releases from                                                                                     |
+| ------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `immich`     | [Immich](https://immich.app), also served by `/version` and `/v1/docs/versions` | GitHub, [immich-app/immich](https://github.com/immich-app/immich)                                 |
+| `futo-notes` | FUTO Notes                                                                      | GitLab, [futo-notes/futo-notes](https://gitlab.futo.org/futo-notes/futo-notes) on gitlab.futo.org |
+
+To onboard a project, open a PR that adds its entry. Editors check it against [`projects.schema.json`](projects.schema.json).
+
+- `id`: a lowercase slug, `^[a-z][a-z0-9-]{1,31}$`. It is permanent: it is the URL segment, the D1 key and the `version_project` metric tag, so it can't be renamed or reused.
+- `source`: where its releases come from. Only releases count, never bare tags.
+  - A GitHub repository: `{ "type": "github-releases", "repo": "owner/name", "repoId": 123 }`, with the id from `gh api repos/owner/name --jq .id`. It is read through the service's GitHub App installation, and by that id, which survives renames and transfers, so the id is what must be right.
+  - A GitLab project: `{ "type": "gitlab-releases", "host": "gitlab.futo.org", "path": "group/name" }`. It is read without a token, so it must be public.
+- `tags`: a `pattern` that matches the whole tag and captures the version in a group named `version`, and the `scheme` that parses it: `semver`, or `dotted` for one to four numbers such as `0.1.29.1`. A tag the pattern doesn't match isn't the project's.
+- `channels`: each channel serves every stable release, plus the prereleases whose label it lists (`rc` takes both `-rc.2` and `-rc2`, `*` takes every prerelease). `{ "stable": [] }` serves stable releases only. `defaultChannel` is the one served when a request names none.
+- `analytics`: `{ "clientIdentity": false }`. Putting client IPs and user agents on request metrics is a privacy decision that needs its own review.
+- `examples`: real tags, each with the version and channels it must give, or `null` for a tag the project ignores. Pick the ones that are easy to get wrong: prereleases, one-off builds, and tags of other projects on the same source.
+
+`pnpm run validate:projects` checks the entry and its examples, and CI runs it as "Validate projects.json". Once the PR is merged, `main` deploys dev, then prod. The next `*/30` sync fetches the project's releases in full (up to 300), and each one after lists the newest 20, so a new release is served within 30 minutes. Then check `https://version.dev.futo.cloud/v1/projects/{id}/version`, and the same path on `version.futo.cloud`. A sync that keeps failing fires the `version-project-sync-failing` alert, and new releases whose tags the pattern doesn't match fire `version-project-tags-skipped` ([`o11y/`](o11y/README.md)).
+
+Versions are ordered by the scheme, never by release date: FUTO Notes released v1.4.0 a month after v1.4.1, and v1.4.1 is still the newer one. Removing an entry stops its syncs and its route; its stored releases stay in D1, unserved.
+
+To try an entry before it is merged, run its sync locally against a local D1. Without the GitHub App's bindings, GitHub is read unauthenticated, at 60 requests an hour.
+
+```bash
+pnpm exec wrangler d1 migrations apply VERSION_DB --local
+pnpm exec wrangler dev --test-scheduled
+curl 'http://localhost:8787/__scheduled?cron=*/30+*+*+*+*'
+curl http://localhost:8787/v1/projects/{id}/version
+```
 
 ## Development
 
