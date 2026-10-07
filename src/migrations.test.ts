@@ -31,12 +31,6 @@ const tables = async () => {
 // Live databases hold data by the time a migration is replayed, so every table
 // the migrations create gets a row the replay must preserve. Add new tables here.
 const SEEDS: Record<string, { insert: D1PreparedStatement; remove: D1PreparedStatement }> = {
-  releases: {
-    insert: db
-      .prepare('INSERT OR IGNORE INTO releases (id, tag_name, major, minor, patch) VALUES (?1, ?2, ?3, ?4, ?5)')
-      .bind(424_242, 'v9.8.7', 9, 8, 7),
-    remove: db.prepare('DELETE FROM releases WHERE id = 424242'),
-  },
   project_releases: {
     insert: db
       .prepare(
@@ -63,6 +57,26 @@ const eachSeed = async (action: 'insert' | 'remove') => {
   }
 };
 
+// The legacy releases table as dev and prod still hold it, from the deleted
+// 0001_init.sql and 0002_add_prerelease.sql, with a row in it.
+const LEGACY_RELEASES = [
+  `CREATE TABLE IF NOT EXISTS releases (
+    id INTEGER PRIMARY KEY,
+    tag_name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    published_at TEXT NOT NULL DEFAULT '',
+    major INTEGER NOT NULL,
+    minor INTEGER NOT NULL,
+    patch INTEGER NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_releases_semver ON releases (major DESC, minor DESC, patch DESC)',
+  'ALTER TABLE releases ADD prerelease INTEGER',
+  "INSERT INTO releases (id, tag_name, major, minor, patch, prerelease) VALUES (1, 'v3.2.4', 3, 2, 4, 0)",
+];
+
 // d1.tf has no ledger: every deploy that changes a migration, and every retry,
 // replays every file against the live database. That must change nothing.
 const expectReplaySafe = async (files: D1Migration[]) => {
@@ -79,6 +93,7 @@ const expectReplaySafe = async (files: D1Migration[]) => {
 describe('migrations', () => {
   afterEach(async () => {
     await db.prepare('DROP TABLE IF EXISTS replay_probe').run();
+    await db.prepare('DROP TABLE IF EXISTS releases').run();
     await eachSeed('remove');
   });
 
@@ -101,6 +116,20 @@ describe('migrations', () => {
     await expectReplaySafe(migrations);
   });
 
+  it('drop the legacy releases table from a database that still has it, and nothing else', async () => {
+    await eachSeed('insert');
+    const expected = await snapshot();
+    for (const query of LEGACY_RELEASES) {
+      await db.prepare(query).run();
+    }
+    const { objects } = await snapshot();
+    expect(objects.map(({ name }) => name)).toEqual(expect.arrayContaining(['idx_releases_semver', 'releases']));
+
+    await replayMigrations(db);
+
+    expect(await snapshot()).toEqual(expected);
+  });
+
   it('catch a migration that adds rows on every replay', async () => {
     const files = [
       ...migrations,
@@ -111,7 +140,7 @@ describe('migrations', () => {
   });
 
   it('catch a migration that deletes existing data', async () => {
-    const files = [...migrations, { name: 'delete.sql', queries: ['DELETE FROM releases'] }];
+    const files = [...migrations, { name: 'delete.sql', queries: ['DELETE FROM project_releases'] }];
     await expect(expectReplaySafe(files)).rejects.toThrow();
   });
 
