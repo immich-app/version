@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { GitHubTokens, type GitHubCredentials } from './github-auth.js';
 import { GitHubReleasesSource } from './github-source.js';
 import { errorClass, RateLimitError, SourceAuthError, SourceHttpError } from './sources.js';
+import { githubAppAnswer, githubAppPrivateKey } from './test/helpers.js';
 
 // futo-org/example, by its id.
 const REPOSITORY = { repo: 'futo-org/example', repoId: 1 };
@@ -52,6 +53,46 @@ function cutOff() {
     },
   });
 }
+
+// Answers a GitHub App's requests as GitHub does, with the app installed on
+// these owners, recording every request.
+function mockGitHubApp(installations: Record<string, number>) {
+  const requests: Request[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    const answer = githubAppAnswer(request, installations);
+    return answer ? Promise.resolve(answer) : Promise.reject(new Error(`unexpected fetch: ${request.url}`));
+  });
+  return requests;
+}
+
+// mockGitHubApp, except that the lookups of these repositories answer as given.
+function mockGitHubAppWith(installations: Record<string, number>, lookups: Record<string, () => Response>) {
+  const requests: Request[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    const repo = /\/repos\/([^/]+\/[^/]+)\/installation$/.exec(request.url)?.[1];
+    const answer = (repo && lookups[repo]?.()) || githubAppAnswer(request, installations);
+    return answer ? Promise.resolve(answer) : Promise.reject(new Error(`unexpected fetch: ${request.url}`));
+  });
+  return requests;
+}
+
+const lookupsOf = (requests: Request[]) => requests.filter(({ url }) => url.endsWith('/installation'));
+
+// A JWT's claims, read without checking its signature.
+const jwtClaims = (authorization: string | null) =>
+  JSON.parse(
+    atob(
+      authorization!
+        .replace(/^bearer /i, '')
+        .split('.', 2)[1]
+        .replaceAll('-', '+')
+        .replaceAll('_', '/'),
+    ),
+  );
 
 describe('GitHubReleasesSource', () => {
   afterEach(() => {
@@ -341,7 +382,12 @@ describe('GitHubReleasesSource.confirmRetracted', () => {
 });
 
 describe('GitHubTokens', () => {
-  const app = { GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: 'not a key', GITHUB_APP_INSTALLATION_ID: '42' };
+  // The app's id, with a key octokit can sign its JWTs with.
+  let app: { GITHUB_APP_ID: string; GITHUB_APP_PRIVATE_KEY: string };
+
+  beforeAll(async () => {
+    app = { GITHUB_APP_ID: '1', GITHUB_APP_PRIVATE_KEY: await githubAppPrivateKey() };
+  });
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -354,38 +400,108 @@ describe('GitHubTokens', () => {
     expect(await credentials.token()).toBeUndefined();
   });
 
-  it("gives every repository the installation's rate limit, whatever its owner", () => {
+  it("looks again for an owner's next repository after one the app isn't installed on", async () => {
+    mockGitHubAppWith({ 'futo-org': 8 }, { 'futo-org/denied': () => Response.json({}, { status: 404 }) });
     const tokens = new GitHubTokens(app);
 
-    expect(tokens.forRepository('immich-app/immich').rateLimitKey).toBe('github-installation:42');
-    expect(tokens.forRepository('futo-org/example').rateLimitKey).toBe('github-installation:42');
+    await expect(tokens.forRepository('futo-org/denied').token()).rejects.toBeInstanceOf(SourceAuthError);
+    expect(await tokens.forRepository('futo-org/allowed').token()).toBe('token-8');
   });
 
-  it('mints the token once per run, and fails as an auth error', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
+  it.each([
+    ['a 429', () => new Response(null, { status: 429, headers: { 'Retry-After': '60' } })],
+    [
+      'a 403 with no requests left',
+      () => new Response(null, { status: 403, headers: { 'X-RateLimit-Remaining': '0' } }),
+    ],
+  ])(
+    'reports %s on the installation lookup as a rate limit, and looks up nothing more this run',
+    async (_, limited) => {
+      const requests = mockGitHubAppWith({ 'immich-app': 7, 'futo-org': 8 }, { 'futo-org/example': limited });
+      const tokens = new GitHubTokens(app);
+      expect(await tokens.forRepository('immich-app/immich').token()).toBe('token-7');
+
+      let error: unknown;
+      try {
+        await tokens.forRepository('futo-org/example').token();
+      } catch (error_) {
+        error = error_;
+      }
+      expect(error).toBeInstanceOf(RateLimitError);
+      expect(errorClass(error)).toBe('rate_limited');
+
+      await expect(tokens.forRepository('futo-org/other').token()).rejects.toBeInstanceOf(RateLimitError);
+      expect(lookupsOf(requests)).toHaveLength(2);
+      // The owner already minted keeps its token.
+      expect(await tokens.forRepository('immich-app/immich').token()).toBe('token-7');
+    },
+  );
+
+  it("gives each owner its own installation's rate limit", () => {
     const tokens = new GitHubTokens(app);
+
+    expect(tokens.forRepository('immich-app/immich').rateLimitKey).toBe('github-installation:immich-app');
+    expect(tokens.forRepository('Immich-App/static-pages').rateLimitKey).toBe('github-installation:immich-app');
+    expect(tokens.forRepository('futo-org/example').rateLimitKey).toBe('github-installation:futo-org');
+  });
+
+  it("reads each repository with its owner's installation, which the app finds with its JWT", async () => {
+    const requests = mockGitHubApp({ 'immich-app': 7, 'futo-org': 8 });
+    const tokens = new GitHubTokens(app);
+
+    expect(await tokens.forRepository('immich-app/immich').token()).toBe('token-7');
+    expect(await tokens.forRepository('futo-org/example').token()).toBe('token-8');
+
+    expect(requests.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      'GET https://api.github.com/repos/immich-app/immich/installation',
+      'POST https://api.github.com/app/installations/7/access_tokens',
+      'GET https://api.github.com/repos/futo-org/example/installation',
+      'POST https://api.github.com/app/installations/8/access_tokens',
+    ]);
+    expect(requests[0].headers.get('User-Agent')).toBe('futo-version-service');
+    for (const request of requests) {
+      expect(jwtClaims(request.headers.get('Authorization'))).toMatchObject({ iss: '1' });
+    }
+  });
+
+  it("finds and mints an owner's token once per run, whichever of its repositories asks", async () => {
+    const requests = mockGitHubApp({ 'immich-app': 7 });
+    const tokens = new GitHubTokens(app);
+
     const first = tokens.forRepository('immich-app/immich').token();
-    const second = tokens.forRepository('futo-org/example').token();
+    const second = tokens.forRepository('Immich-App/static-pages').token();
 
     expect(second).toBe(first);
-    await expect(first).rejects.toBeInstanceOf(SourceAuthError);
-    await expect(first).rejects.toThrow(/^GitHub App token: /);
+    expect(await second).toBe('token-7');
+    expect(requests).toHaveLength(2);
   });
 
-  it('reports a mint that stalls past its deadline as a timeout, not an auth failure', async () => {
-    // A real key, so the mint gets past signing to the request that stalls.
-    const { privateKey } = (await crypto.subtle.generateKey(
-      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
-      true,
-      ['sign', 'verify'],
-    )) as CryptoKeyPair;
-    const der = new Uint8Array((await crypto.subtle.exportKey('pkcs8', privateKey)) as ArrayBuffer);
-    const pem = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCodePoint(...der))}\n-----END PRIVATE KEY-----`;
-    vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise<Response>(() => {}));
+  it("fails an owner the app isn't installed on as an auth error, and no other owner", async () => {
+    mockGitHubApp({ 'immich-app': 7 });
+    const tokens = new GitHubTokens(app);
 
-    const failure = new GitHubTokens({ ...app, GITHUB_APP_PRIVATE_KEY: pem }, 20)
+    const failure = tokens.forRepository('futo-org/example').token();
+
+    await expect(failure).rejects.toBeInstanceOf(SourceAuthError);
+    await expect(failure).rejects.toThrow('GitHub App token: the app is not installed on futo-org/example');
+    expect(await tokens.forRepository('immich-app/immich').token()).toBe('token-7');
+  });
+
+  it("fails as an auth error when the app's key is unusable", async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected fetch'));
+
+    const failure = new GitHubTokens({ ...app, GITHUB_APP_PRIVATE_KEY: 'not a key' })
       .forRepository('immich-app/immich')
       .token();
+
+    await expect(failure).rejects.toBeInstanceOf(SourceAuthError);
+    await expect(failure).rejects.toThrow(/^GitHub App token: /);
+  });
+
+  it('gives up on finding the installation after its timeout, as a timeout rather than an auth failure', async () => {
+    mockHangingGitHub();
+
+    const failure = new GitHubTokens(app, 20).forRepository('immich-app/immich').token();
 
     let error: unknown;
     try {

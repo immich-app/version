@@ -27,7 +27,7 @@ To onboard a project, open a PR that adds its entry. Editors check it against [`
 
 - `id`: a lowercase slug, `^[a-z][a-z0-9-]{1,31}$`. It is permanent: it is the URL segment, the D1 key and the `version_project` metric tag, so it can't be renamed or reused.
 - `source`: where its releases come from. Only releases count, never bare tags.
-  - A GitHub repository: `{ "type": "github-releases", "repo": "owner/name", "repoId": 123 }`, with the id from `gh api repos/owner/name --jq .id`. It is read through the service's GitHub App installation, and by that id, which survives renames and transfers, so the id is what must be right.
+  - A GitHub repository: `{ "type": "github-releases", "repo": "owner/name", "repoId": 123 }`, with the id from `gh api repos/owner/name --jq .id`. It is read through the service's own GitHub App, which must be installed on the owner with access to the repository; until it is, the project's syncs fail as `auth`. It is read by that id, which survives renames and transfers, so the id is what must be right.
   - A GitLab project: `{ "type": "gitlab-releases", "host": "gitlab.futo.org", "path": "group/name" }`. It is read without a token, so it must be public.
 - `tags`: a `pattern` that matches the whole tag and captures the version in a group named `version`, and the `scheme` that parses it: `semver`, or `dotted` for one to four numbers such as `0.1.29.1`. A tag the pattern doesn't match isn't the project's.
 - `channels`: each channel serves every stable release, plus the prereleases whose label it lists (`rc` takes both `-rc.2` and `-rc2`, `*` takes every prerelease). `{ "stable": [] }` serves stable releases only. `defaultChannel` is the one served when a request names none.
@@ -69,6 +69,8 @@ pnpm run build
 cd deployment/modules/cloudflare/workers/version
 ENVIRONMENT=dev TF_VAR_stage= mise run tg plan
 ```
+
+GitHub releases are read through the version service's own GitHub App, owned by immich-app and public so other owners can install it (Metadata and Contents: read, no webhook). Its credentials come from 1Password (`GITHUB_APP_IMMICH_VERSION`, mirrored by core-infra-tf), and the worker finds the app's installation on each repository's owner. The `release` webhook on immich-app/immich is managed through the Immich Tofu app.
 
 The history of this worker was carried over from immich-app/services. Commit messages that reference PRs from before the move link to that repository.
 
