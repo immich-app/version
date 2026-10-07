@@ -1692,7 +1692,7 @@
       "title": "Sync Errors by Project",
       "type": "timeseries",
       "maxDataPoints": 300,
-      "description": "Failed project syncs by error_class: rate_limited, auth, not_found, http, timeout, d1 or other. A rate limit also fails the projects after it that share its token. The version-project-sync-failing alert fires after 3 failed runs in 2h with the latest one failed, and resolves at the first run that succeeds."
+      "description": "Failed project syncs by error_class: rate_limited, auth, not_found, http, timeout, d1 or other. A rate limit also fails the projects after it that share it: every GitHub project, or every GitLab project on the same host. The version-project-sync-failing alert fires after 3 failed runs in 2h with the latest one failed, and resolves at the first run that succeeds."
     },
     {
       "datasource": {

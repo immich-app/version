@@ -13,6 +13,10 @@ export const PROJECT_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 const CHANNEL_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const LABEL_PATTERN = /^[a-z]+$/;
 const GITHUB_REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
+// A lowercase hostname, without a scheme or a port.
+const GITLAB_HOST_PATTERN = /^[a-z\d-]+(?:\.[a-z\d-]+)+$/;
+// group/name, with any subgroups between.
+const GITLAB_PATH_PATTERN = /^[\w.-]+(?:\/[\w.-]+)+$/;
 
 // The project behind the legacy /version and /v1/docs/versions routes.
 export const LEGACY_PROJECT_ID = 'immich';
@@ -25,8 +29,17 @@ export interface GitHubReleasesSource {
   repoId: number;
 }
 
+// A public GitLab project's releases, read without a token.
+export interface GitLabReleasesSource {
+  type: 'gitlab-releases';
+  // The instance's hostname, e.g. gitlab.futo.org.
+  host: string;
+  // The project's full path: group/name, with any subgroups between.
+  path: string;
+}
+
 // One member per source type, told apart by `type`.
-export type ProjectSource = GitHubReleasesSource;
+export type ProjectSource = GitHubReleasesSource | GitLabReleasesSource;
 
 export interface Example {
   version: string;
@@ -91,14 +104,18 @@ export const findProject = (id: string, list: readonly Project[] = projects) =>
   list.find((project) => project.id === id);
 
 /**
- * Identifies a source whatever its current name: a GitHub repository by its
- * id, which survives renames and transfers. Projects with the same key read the
- * same releases, each keeping only the tags its pattern matches.
+ * Identifies a source: a GitHub repository by its id, which survives renames
+ * and transfers, and a GitLab project by its host and path, ignoring the
+ * path's case as GitLab does. Projects with the same key read the same
+ * releases, each keeping only the tags its pattern matches.
  */
 export function sourceKey(source: ProjectSource): string {
   switch (source.type) {
     case 'github-releases': {
       return `${source.type}:${source.repoId}`;
+    }
+    case 'gitlab-releases': {
+      return `${source.type}:${source.host}/${source.path.toLowerCase()}`;
     }
   }
 }
@@ -273,6 +290,15 @@ const sourceLoaders: SourceLoaders = {
       return;
     }
     return repo ? { type: 'github-releases', repo, repoId } : undefined;
+  },
+  'gitlab-releases'(problems, path, value) {
+    const source = problems.object(path, value, ['type', 'host', 'path']);
+    if (!source) {
+      return;
+    }
+    const host = problems.string(`${path}.host`, source.host, GITLAB_HOST_PATTERN);
+    const projectPath = problems.string(`${path}.path`, source.path, GITLAB_PATH_PATTERN);
+    return host && projectPath ? { type: 'gitlab-releases', host, path: projectPath } : undefined;
   },
 };
 

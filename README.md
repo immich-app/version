@@ -12,7 +12,7 @@ Cloudflare Worker that serves the latest release of each FUTO project it tracks,
 
 `/v1/projects/{id}/version` answers `{"project","channel","version","tag","published_at"}`, where `version` is the version in the tag (`3.3.0`) and `tag` the tag itself (`v3.3.0`). An unregistered id is a 404 `{"error":"Unknown project"}`, a channel the project lacks a 400 `{"error":"Invalid release channel","channels":[…]}`, and an empty channel a 404 `{"error":"No releases found"}`. It takes GET and HEAD, and a 200 may be cached for 5 minutes.
 
-Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. Immich's release webhook stores its releases as they are published.
+Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. A project's releases come from its GitHub repository or, read without a token, its public GitLab project. Immich's release webhook stores its releases as they are published; GitLab projects have no webhook.
 
 ## Development
 

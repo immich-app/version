@@ -27,7 +27,7 @@
         "name": { "description": "Display name.", "type": "string", "pattern": "\\S" },
         "source": {
           "description": "Where releases come from.",
-          "oneOf": [{ "$ref": "#/definitions/githubReleasesSource" }]
+          "oneOf": [{ "$ref": "#/definitions/githubReleasesSource" }, { "$ref": "#/definitions/gitlabReleasesSource" }]
         },
         "tags": {
           "type": "object",
@@ -109,6 +109,25 @@
           "description": "GitHub's repository id (gh api repos/OWNER/NAME --jq .id), which survives renames and transfers.",
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "gitlabReleasesSource": {
+      "description": "A public GitLab project's releases, read without a token and synced by the crons alone, with no webhook.",
+      "type": "object",
+      "required": ["type", "host", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "gitlab-releases" },
+        "host": {
+          "description": "The instance's hostname, lowercase, without a scheme, e.g. gitlab.futo.org.",
+          "type": "string",
+          "pattern": "^[a-z\\d-]+(?:\\.[a-z\\d-]+)+$"
+        },
+        "path": {
+          "description": "The project's full path: group/name, with any subgroups between.",
+          "type": "string",
+          "pattern": "^[\\w.-]+(?:/[\\w.-]+)+$"
         }
       }
     }

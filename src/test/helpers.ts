@@ -146,3 +146,23 @@ export async function runCron(cron: string, { handler = worker as ScheduledHandl
   await handler.scheduled(createScheduledController({ cron }), bindings, ctx);
   await waitOnExecutionContext(ctx);
 }
+
+/**
+ * Answers a GitLab releases listing the way GitLab's offset pagination does:
+ * `per_page` (default 20) of `releases` from `page` (default 1), in the order
+ * given, with the next page's number in x-next-page, left empty on the last.
+ */
+export function gitlabReleasesPage(url: string, releases: readonly unknown[]): Response {
+  const { searchParams } = new URL(url);
+  const perPage = Number(searchParams.get('per_page') ?? 20);
+  const page = Number(searchParams.get('page') ?? 1);
+  const last = page * perPage >= releases.length;
+  return Response.json(releases.slice((page - 1) * perPage, page * perPage), {
+    headers: {
+      'x-page': String(page),
+      'x-per-page': String(perPage),
+      'x-total': String(releases.length),
+      'x-next-page': last ? '' : String(page + 1),
+    },
+  });
+}
