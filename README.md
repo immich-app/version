@@ -1,15 +1,18 @@
 # version
 
-Cloudflare Worker that serves the latest Immich release to servers doing version checks, plus the list of archived docs versions. This repository deploys a fresh instance to the FUTO Cloudflare account; the existing `version.immich.cloud` deployment still runs from [immich-app/services](https://github.com/immich-app/services) until traffic is migrated.
+Cloudflare Worker that serves the latest release of each FUTO project it tracks, including Immich's to servers doing version checks, plus the list of archived Immich docs versions. This repository deploys a fresh instance to the FUTO Cloudflare account; the existing `version.immich.cloud` deployment still runs from [immich-app/services](https://github.com/immich-app/services) until traffic is migrated.
 
-| Route                   | Description                                                                 |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `GET /version`          | Latest release for a channel (`?channel=stable` (default) or `?channel=rc`) |
-| `GET /v1/docs/versions` | Docs versions with links to their `*.archive.immich.app` sites              |
-| `POST /webhook`         | GitHub `release` webhook from `immich-app/immich` (HMAC-SHA256 verified)    |
-| `GET /health`           | Health check                                                                |
+| Route                           | Description                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------------ |
+| `GET /v1/projects/{id}/version` | A project's latest release for a channel (`?channel=`, default the project's own)    |
+| `GET /version`                  | Immich's latest release for a channel (`?channel=stable` (default) or `?channel=rc`) |
+| `GET /v1/docs/versions`         | Immich docs versions with links to their `*.archive.immich.app` sites                |
+| `POST /webhook`                 | GitHub `release` webhook, routed by repository (HMAC-SHA256 verified)                |
+| `GET /health`                   | Health check                                                                         |
 
-Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by the release webhook and two crons: an incremental sync every 30 minutes and a full sync at 03:00 UTC.
+`/v1/projects/{id}/version` answers `{"project","channel","version","tag","published_at"}`, where `version` is the version in the tag (`3.3.0`) and `tag` the tag itself (`v3.3.0`). An unregistered id is a 404 `{"error":"Unknown project"}`, a channel the project lacks a 400 `{"error":"Invalid release channel","channels":[…]}`, and an empty channel a 404 `{"error":"No releases found"}`. It takes GET and HEAD, and a 200 may be cached for 5 minutes.
+
+Releases are stored in D1 per project ([`projects.json`](projects.json); only Immich so far) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. Immich's release webhook stores its releases as they are published.
 
 ## Development
 

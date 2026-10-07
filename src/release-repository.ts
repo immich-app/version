@@ -4,8 +4,16 @@ import type { ProjectRelease } from './types.js';
 // six columns writes up to 16 rows. A batch counts each statement towards the
 // 1000 queries an invocation may run, so a full fetch of 300 releases costs 19.
 const UPSERT_COLUMNS = ['project', 'tag', 'published_at', 'source_id', 'forge_prerelease', 'synced_at'];
+// D1's clock when the statement runs, in the format toISOString() gives. A
+// write is stamped when it lands, not when the worker built it, so a delete
+// cut off at an earlier now() can't take a write that landed after it.
+const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 const MAX_BOUND_PARAMETERS = 100;
-const UPSERT_ROWS_PER_STATEMENT = Math.floor(MAX_BOUND_PARAMETERS / UPSERT_COLUMNS.length);
+// synced_at is NOW, not a bound parameter.
+const UPSERT_ROWS_PER_STATEMENT = Math.floor(MAX_BOUND_PARAMETERS / (UPSERT_COLUMNS.length - 1));
+// A delete binds the project, then its tags.
+// The project and the time, then a tag and a source id per release.
+const DELETE_RELEASES_PER_STATEMENT = Math.floor((MAX_BOUND_PARAMETERS - 2) / 2);
 
 interface ProjectReleaseRow {
   tag: string;
@@ -20,6 +28,17 @@ export interface IReleaseRepository {
   list(projectId: string): Promise<ProjectRelease[]>;
   // Inserts the releases, or updates the stored ones with the same tag.
   upsertMany(projectId: string, releases: readonly ProjectRelease[]): Promise<void>;
+  // Deletes each release by its tag and source id, and only if its row was
+  // last written before writtenBefore (a now()): a release replaced under the
+  // same tag, or written again under the same id, since then survives. Returns
+  // how many rows it removed.
+  deleteMany(
+    projectId: string,
+    releases: readonly Pick<ProjectRelease, 'tag' | 'source_id'>[],
+    writtenBefore: string,
+  ): Promise<number>;
+  // D1's clock now, the same clock writes are stamped with (synced_at).
+  now(): Promise<string>;
   // When the project last finished a full fetch from its source, or null if it never has.
   getFullSyncedAt(projectId: string): Promise<string | null>;
   markFullSynced(projectId: string): Promise<void>;
@@ -41,7 +60,6 @@ export class ReleaseRepository implements IReleaseRepository {
   }
 
   async upsertMany(projectId: string, releases: readonly ProjectRelease[]): Promise<void> {
-    const syncedAt = new Date().toISOString();
     const statements: D1PreparedStatement[] = [];
 
     for (let start = 0; start < releases.length; start += UPSERT_ROWS_PER_STATEMENT) {
@@ -61,7 +79,7 @@ export class ReleaseRepository implements IReleaseRepository {
             .bind(projectId, ...sourced.flatMap((release) => [release.source_id, release.tag])),
         );
       }
-      const row = `(${UPSERT_COLUMNS.map(() => '?').join(', ')})`;
+      const row = `(${UPSERT_COLUMNS.map((column) => (column === 'synced_at' ? NOW : '?')).join(', ')})`;
       statements.push(
         this.db
           .prepare(
@@ -80,7 +98,6 @@ export class ReleaseRepository implements IReleaseRepository {
               release.published_at,
               release.source_id,
               release.forge_prerelease === null ? null : Number(release.forge_prerelease),
-              syncedAt,
             ]),
           ),
       );
@@ -89,6 +106,37 @@ export class ReleaseRepository implements IReleaseRepository {
     if (statements.length > 0) {
       await this.db.batch(statements);
     }
+  }
+
+  async deleteMany(
+    projectId: string,
+    releases: readonly Pick<ProjectRelease, 'tag' | 'source_id'>[],
+    writtenBefore: string,
+  ): Promise<number> {
+    const statements: D1PreparedStatement[] = [];
+
+    for (let start = 0; start < releases.length; start += DELETE_RELEASES_PER_STATEMENT) {
+      const chunk = releases.slice(start, start + DELETE_RELEASES_PER_STATEMENT);
+      statements.push(
+        this.db
+          .prepare(
+            `DELETE FROM project_releases WHERE project = ? AND synced_at < ? AND (${chunk.map(() => '(tag = ? AND source_id = ?)').join(' OR ')})`,
+          )
+          .bind(projectId, writtenBefore, ...chunk.flatMap(({ tag, source_id }) => [tag, source_id])),
+      );
+    }
+
+    if (statements.length === 0) {
+      return 0;
+    }
+    // The rows it actually removed: a candidate written again since the cutoff stays.
+    const results = await this.db.batch(statements);
+    return results.reduce((total, { meta }) => total + meta.changes, 0);
+  }
+
+  async now(): Promise<string> {
+    const row = await this.db.prepare(`SELECT ${NOW} AS now`).first<{ now: string }>();
+    return row!.now;
   }
 
   async getFullSyncedAt(projectId: string): Promise<string | null> {

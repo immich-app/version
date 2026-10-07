@@ -1,7 +1,7 @@
 {
   "name": "version",
   "version": "1.0.0",
-  "description": "Version check and docs versions API for Immich",
+  "description": "Latest-release API for FUTO projects, and Immich's docs versions",
   "private": true,
   "type": "module",
   "scripts": {

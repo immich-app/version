@@ -24,6 +24,9 @@ async function listed(project: string) {
   return releases;
 }
 
+// After every row these tests write, so a delete takes them all.
+const LATER = '9999-12-31T00:00:00.000Z';
+
 async function tags(project: string) {
   const releases = await listed(project);
   return releases.map(({ tag }) => tag);
@@ -110,9 +113,10 @@ describe('ReleaseRepository', () => {
 
     await new ReleaseRepository(database).upsertMany('immich', releases);
 
-    // 19 chunks of 16 rows, each a delete of retagged rows and an upsert.
-    expect(batches).toEqual([38]);
-    expect(prepared).toHaveLength(38);
+    // 15 chunks of 20 rows (synced_at is D1's clock, not a parameter), each a
+    // delete of retagged rows and an upsert.
+    expect(batches).toEqual([30]);
+    expect(prepared).toHaveLength(30);
     for (const sql of prepared) {
       expect(sql.match(/\?/g)?.length).toBeLessThanOrEqual(100);
     }
@@ -146,6 +150,94 @@ describe('ReleaseRepository', () => {
     const { database, batches } = recordingDatabase();
 
     await new ReleaseRepository(database).upsertMany('immich', []);
+
+    expect(batches).toEqual([]);
+  });
+
+  it("deletes only the project's own releases with those tags", async () => {
+    await repository.upsertMany('immich', [release('v1.0.0'), release('v1.1.0'), release('v1.2.0')]);
+    await repository.upsertMany('futo-notes', [release('v1.0.0')]);
+
+    await repository.deleteMany('immich', [release('v1.0.0'), release('v1.2.0'), release('v9.9.9')], LATER);
+
+    expect(await listed('immich')).toEqual([release('v1.1.0')]);
+    expect(await repository.list('futo-notes')).toEqual([release('v1.0.0')]);
+  });
+
+  it("stamps each write with D1's clock when it lands, in toISOString()'s format", async () => {
+    const before = await repository.now();
+    await repository.upsertMany('immich', [release('v1.0.0')]);
+
+    const stamped = await syncedAt('immich', 'v1.0.0');
+    expect(stamped).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(stamped! >= before).toBe(true);
+  });
+
+  it('keeps a webhook write that was built before the checks began but landed after', async () => {
+    await repository.upsertMany('immich', [release('v1.0.0')]);
+    await db.exec("UPDATE project_releases SET synced_at = '2000-01-01T00:00:00.000Z'");
+    // The webhook builds its batch, then the cron takes its cutoff, then the batch lands.
+    let cutoff = '';
+    const held = {
+      prepare: (sql: string) => db.prepare(sql),
+      batch: async (statements: D1PreparedStatement[]) => {
+        await new Promise((wait) => setTimeout(wait, 5));
+        cutoff = await repository.now();
+        return db.batch(statements);
+      },
+    } as unknown as D1Database;
+    await new ReleaseRepository(held).upsertMany('immich', [release('v1.0.0', { published_at: 'again' })]);
+
+    expect(await repository.deleteMany('immich', [release('v1.0.0')], cutoff)).toBe(0);
+    expect(await listed('immich')).toEqual([release('v1.0.0', { published_at: 'again' })]);
+  });
+
+  it('returns how many rows it deleted', async () => {
+    await repository.upsertMany('immich', [release('v1.0.0'), release('v1.1.0')]);
+
+    expect(
+      await repository.deleteMany('immich', [release('v1.0.0'), release('v1.1.0'), release('v9.9.9')], LATER),
+    ).toBe(2);
+  });
+
+  it('keeps a release written again, under the same tag and id, after the checks began', async () => {
+    await repository.upsertMany('immich', [release('v1.0.0'), release('v1.1.0')]);
+    // v1.0.0 was a draft when it was checked, and a webhook has republished it since.
+    await db.exec("UPDATE project_releases SET synced_at = '2026-01-01T00:00:00.000Z'");
+    await db.exec("UPDATE project_releases SET synced_at = '2026-01-01T00:05:00.000Z' WHERE tag = 'v1.0.0'");
+
+    await repository.deleteMany('immich', [release('v1.0.0'), release('v1.1.0')], '2026-01-01T00:01:00.000Z');
+
+    expect(await listed('immich')).toEqual([release('v1.0.0')]);
+  });
+
+  it('keeps a release that has replaced the deleted one under the same tag', async () => {
+    await repository.upsertMany('immich', [release('v1.0.0', { source_id: 'new' })]);
+
+    await repository.deleteMany('immich', [release('v1.0.0', { source_id: 'old' })], LATER);
+
+    expect(await listed('immich')).toEqual([release('v1.0.0', { source_id: 'new' })]);
+  });
+
+  it('splits a large delete into statements of at most 100 bound parameters, in one batch', async () => {
+    const releases = Array.from({ length: 250 }, (_, index) => release(`v1.${index}.0`));
+    await repository.upsertMany('immich', [...releases, release('v2.0.0')]);
+    const { database, prepared, batches } = recordingDatabase();
+
+    await new ReleaseRepository(database).deleteMany('immich', releases, LATER);
+
+    // 49 releases a statement: the project and the time, then a tag and a source id each.
+    expect(batches).toEqual([6]);
+    for (const sql of prepared) {
+      expect(sql.match(/\?/g)?.length).toBeLessThanOrEqual(100);
+    }
+    expect(await repository.list('immich')).toEqual([release('v2.0.0')]);
+  });
+
+  it('deletes nothing for an empty list', async () => {
+    const { database, batches } = recordingDatabase();
+
+    await new ReleaseRepository(database).deleteMany('immich', [], LATER);
 
     expect(batches).toEqual([]);
   });

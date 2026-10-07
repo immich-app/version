@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { legacyProject, loadProjects, type Project } from './projects.js';
-import { latestPerChannel, newestFirst } from './releases.js';
+import { latestPerChannel, newestFirst, retractedReleases, skippedTags } from './releases.js';
 import type { ProjectRelease } from './types.js';
 
 const row = (tag: string, published_at = ''): ProjectRelease => ({
@@ -145,5 +145,101 @@ describe('newestFirst', () => {
         published_at: '2025-01-01T00:00:00Z',
       },
     ]);
+  });
+});
+
+const tagsOf = (releases: ProjectRelease[]) => releases.map(({ tag }) => tag);
+
+describe('retractedReleases', () => {
+  const stored = [
+    row('v1.2.0', '2025-03-01T00:00:00Z'),
+    row('v1.1.0', '2025-02-01T00:00:00Z'),
+    row('v1.0.0', '2025-01-01T00:00:00Z'),
+  ];
+  it('takes down every stored release a complete listing lacks', () => {
+    const fetched = { releases: [row('v1.2.0', '2025-03-01T00:00:00Z')], complete: true };
+    expect(tagsOf(retractedReleases(fetched, stored))).toEqual(['v1.1.0', 'v1.0.0']);
+  });
+
+  it('puts the newest published first, so a sync that runs out of checks leaves the oldest', () => {
+    const fetched = { releases: [row('v1.3.0', '2025-04-01T00:00:00Z')], complete: true };
+    const [newest, middle, oldest] = stored;
+    expect(tagsOf(retractedReleases(fetched, [oldest, row('v0.9.0'), newest, middle]))).toEqual([
+      'v1.2.0',
+      'v1.1.0',
+      'v1.0.0',
+      'v0.9.0',
+    ]);
+  });
+
+  it('takes nothing down when the listing stopped at its page cap', () => {
+    const fetched = {
+      releases: [row('v1.2.0', '2025-03-01T00:00:00Z'), row('v1.0.5', '2025-01-15T00:00:00Z')],
+      complete: false,
+    };
+    expect(retractedReleases(fetched, stored)).toEqual([]);
+  });
+
+  it('keeps a release created before the cap but published after the oldest listed one', () => {
+    // GitHub lists by creation date: v1.1.5 was drafted long ago and published
+    // lately, so it sits past the cap though its publish date is in the window.
+    const fetched = {
+      releases: [row('v1.2.0', '2025-03-01T00:00:00Z'), row('v1.0.5', '2025-01-15T00:00:00Z')],
+      complete: false,
+    };
+    const lateDraft = row('v1.1.5', '2025-04-01T00:00:00Z');
+    expect(retractedReleases(fetched, [...stored, lateDraft])).not.toContainEqual(lateDraft);
+  });
+
+  it('takes down a release without a publish date that a complete listing lacks', () => {
+    const fetched = { releases: [row('v1.2.0', '2025-03-01T00:00:00Z')], complete: true };
+    expect(tagsOf(retractedReleases(fetched, [row('v0.9.0')]))).toEqual(['v0.9.0']);
+  });
+
+  it("makes every stored release a candidate when a complete listing is empty, so a project's last release can go", () => {
+    expect(tagsOf(retractedReleases({ releases: [], complete: true }, stored))).toEqual(tagsOf(stored));
+  });
+
+  it('makes nothing a candidate when an empty listing stopped short', () => {
+    expect(retractedReleases({ releases: [], complete: false }, stored)).toEqual([]);
+  });
+
+  it("keeps a release that is still listed, even if the project's pattern no longer takes it", () => {
+    const fetched = { releases: [...stored, row('nightly', '2025-04-01T00:00:00Z')], complete: true };
+    expect(retractedReleases(fetched, [...stored, row('v1.3.0_1-dev')])).toEqual([row('v1.3.0_1-dev')]);
+  });
+});
+
+describe('skippedTags', () => {
+  const stored = [row('v1.2.0', '2025-03-01T00:00:00Z')];
+
+  it('counts unrecognized releases newer than the newest recognized one', () => {
+    const fetched = [
+      row('release-1.4.0', '2025-05-01T00:00:00Z'),
+      row('release-1.3.0', '2025-04-01T00:00:00Z'),
+      row('v1.2.0', '2025-03-01T00:00:00Z'),
+      row('v1.0.0_1-dev', '2024-01-01T00:00:00Z'),
+    ];
+    expect(skippedTags(immich, [immich], fetched, stored)).toBe(2);
+  });
+
+  it('stops counting once a newer release is recognized', () => {
+    const fetched = [row('v1.3.0', '2025-06-01T00:00:00Z'), row('release-1.3.0', '2025-04-01T00:00:00Z')];
+    expect(skippedTags(immich, [immich], fetched, stored)).toBe(0);
+  });
+
+  it('ignores a recognized release without a publish date when finding the newest', () => {
+    const fetched = [row('release-1.3.0', '2025-04-01T00:00:00Z'), row('v1.2.1')];
+    expect(skippedTags(immich, [immich], fetched, stored)).toBe(1);
+  });
+
+  it('counts every dated release when the project recognizes none', () => {
+    expect(skippedTags(immich, [immich], [row('release-1.0.0', '2025-01-01T00:00:00Z'), row('draft')], [])).toBe(1);
+  });
+
+  it('leaves out the tags of another project on the same source', () => {
+    const fetched = [row('v2.0.0-beta.1', '2025-05-01T00:00:00Z'), row('v2.0.0-alpha.1', '2025-04-01T00:00:00Z')];
+    expect(skippedTags(immich, [immich], fetched, stored)).toBe(2);
+    expect(skippedTags(immich, [immich, loose], fetched, stored)).toBe(1);
   });
 });
