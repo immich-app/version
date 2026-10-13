@@ -31,6 +31,13 @@ variable "github_app_version_pem_file" {
   sensitive   = true
 }
 
+variable "github_app_version_webhook_secret" {
+  description = "Secret the version service's GitHub App signs its release webhook with. Bound on dev main and prod; PR stages get no deliveries"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "github_app_tofu_id" {
   description = "GitHub App ID for the Immich Tofu app, which manages the release webhook"
   type        = string

@@ -70,7 +70,7 @@ cd deployment/modules/cloudflare/workers/version
 ENVIRONMENT=dev TF_VAR_stage= mise run tg plan
 ```
 
-GitHub releases are read through the version service's own GitHub App, owned by immich-app and public so other owners can install it (Metadata and Contents: read, no webhook). Its credentials come from 1Password (`GITHUB_APP_FUTO_VERSION`, mirrored by core-infra-tf), and the worker finds the app's installation on each repository's owner. The `release` webhook on immich-app/immich is managed through the Immich Tofu app.
+GitHub releases are read through the version service's own GitHub App, owned by immich-app and public so other owners can install it (Metadata and Contents: read). Its credentials come from 1Password (`GITHUB_APP_FUTO_VERSION`, mirrored by core-infra-tf), and the worker finds the app's installation on each repository's owner. The app's own webhook delivers the **Release** event for every repository it's installed on to prod's `/webhook`, signed with `FUTO_VERSION_GITHUB_WEBHOOK_SECRET`; dev main and PR stages rely on the sync crons.
 
 The history of this worker was carried over from immich-app/services. Commit messages that reference PRs from before the move link to that repository.
 

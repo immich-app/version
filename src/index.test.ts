@@ -441,6 +441,13 @@ describe('Version Worker', () => {
       expect(await response.json()).toEqual({ ignored: true });
     });
 
+    // A GitHub App's webhook also delivers its own lifecycle events.
+    it.each(['installation', 'installation_repositories'])('ignores the app event %s', async (event) => {
+      const response = await deliver(JSON.stringify({ action: 'created', installation: { id: 1 } }), event);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ignored: true });
+    });
+
     it('ignores non-published release actions', async () => {
       const response = await deliver(JSON.stringify({ action: 'created', release: {}, repository: IMMICH_REPOSITORY }));
       expect(response.status).toBe(200);
