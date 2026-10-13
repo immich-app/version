@@ -8,7 +8,7 @@
       "tags": { "pattern": "^v(?<version>\\d+\\.\\d+\\.\\d+(?:-rc\\.\\d+)?)$", "scheme": "semver" },
       "channels": { "stable": [], "rc": ["rc"] },
       "defaultChannel": "stable",
-      "analytics": { "clientIdentity": true, "serverUserAgentPrefix": "immich-server/" },
+      "userAgentPrefix": "immich-server/",
       "examples": {
         "v3.2.4": { "version": "3.2.4", "channels": ["stable", "rc"] },
         "v3.3.0-rc.2": { "version": "3.3.0-rc.2", "channels": ["rc"] },
@@ -31,7 +31,7 @@
       "tags": { "pattern": "^v(?<version>\\d+\\.\\d+\\.\\d+)$", "scheme": "semver" },
       "channels": { "stable": [] },
       "defaultChannel": "stable",
-      "analytics": { "clientIdentity": false },
+      "userAgentPrefix": "futo-notes/",
       "examples": {
         "v1.8.0": { "version": "1.8.0", "channels": ["stable"] },
         "v1.4.1": { "version": "1.4.1", "channels": ["stable"] },

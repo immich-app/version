@@ -260,22 +260,34 @@ export function requestEdge(request: Request): RequestEdge {
 }
 
 /**
- * The tags the recording rules count a project's servers by: client IP, user
- * agent, continent and network. Only a project whose registry entry sets
- * analytics.clientIdentity gets them, so one whose clients are end-user
- * devices doesn't put a series per device in the shared store.
+ * The tags the recording rules count a project's clients by: client IP, user
+ * agent, continent and network, plus client_version for a request whose user
+ * agent starts with the project's userAgentPrefix. Only those requests count as
+ * the project's clients, so a browser or a scanner on the same route is never
+ * counted as one.
  */
-export function clientTags(request: Request, { clientIdentity }: { clientIdentity: boolean }): Record<string, string> {
-  if (!clientIdentity) {
-    return {};
-  }
+export function clientTags(request: Request, userAgentPrefix: string): Record<string, string> {
   const { continent, asOrg } = requestEdge(request);
-  return {
+  const userAgent = request.headers.get('User-Agent') ?? '';
+  const tags: Record<string, string> = {
     client_ip: request.headers.get('CF-Connecting-IP') ?? '',
-    user_agent: request.headers.get('User-Agent') ?? '',
+    user_agent: userAgent,
     continent,
     asOrg,
   };
+  const clientVersion = clientVersionOf(userAgent, userAgentPrefix);
+  if (clientVersion) {
+    tags.client_version = clientVersion;
+  }
+  return tags;
+}
+
+// The version after the prefix, up to the first space and without a leading v,
+// so that it compares equal to a release's version: 3.3.1 for both
+// immich-server/3.3.1 and immich-server/v3.3.1 (linux). The v goes first, so a
+// lone v is no version.
+function clientVersionOf(userAgent: string, prefix: string): string {
+  return userAgent.startsWith(prefix) ? (/^\S+/.exec(userAgent.slice(prefix.length).replace(/^v/, ''))?.[0] ?? '') : '';
 }
 
 export class CloudflareMetricsRepository implements IMetricsRepository {

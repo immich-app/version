@@ -14,15 +14,11 @@ import {
   sameSource,
   SOURCE_TYPES,
   sourceKey,
+  USER_AGENT_PREFIX_PATTERN,
 } from './projects.js';
 import { versionSchemes } from './version-schemes.js';
 
 // CI runs this file as its own "Validate projects.json" step.
-
-// The projects allowed to tag request metrics with client IPs and user agents.
-// Adding one is a privacy and cardinality decision, so it has to show up here
-// as an explicit diff.
-const CLIENT_IDENTITY_PROJECTS = ['immich'];
 
 const entry = () => ({
   id: 'example',
@@ -31,7 +27,7 @@ const entry = () => ({
   tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+(?:-[\da-z.]+)?)$`, scheme: 'semver' },
   channels: { stable: [], beta: ['beta', 'rc'] } as Record<string, string[]>,
   defaultChannel: 'stable',
-  analytics: { clientIdentity: false } as Record<string, unknown>,
+  userAgentPrefix: 'example/',
   examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable', 'beta'] } } as Record<string, unknown>,
 });
 
@@ -97,16 +93,13 @@ describe('projects.json', () => {
     expect(immich!.defaultChannel).toBe('stable');
   });
 
-  it("keeps the client identity and server user agent Immich's server analytics depend on", () => {
-    expect(findProject(LEGACY_PROJECT_ID)?.analytics).toEqual({
-      clientIdentity: true,
-      serverUserAgentPrefix: 'immich-server/',
-    });
+  it('keeps the user agent prefix Immich servers send, which its project analytics count by', () => {
+    expect(findProject(LEGACY_PROJECT_ID)?.userAgentPrefix).toBe('immich-server/');
   });
 
-  it('only lets allowlisted projects record client identity', () => {
-    const identified = projects.filter((project) => project.analytics.clientIdentity).map(({ id }) => id);
-    expect(CLIENT_IDENTITY_PROJECTS).toEqual(expect.arrayContaining(identified));
+  it('gives every project its own user agent prefix', () => {
+    const prefixes = projects.map(({ userAgentPrefix }) => userAgentPrefix);
+    expect(new Set(prefixes).size).toBe(prefixes.length);
   });
 });
 
@@ -116,6 +109,10 @@ describe('projects.schema.json', () => {
 
   it("uses the validator's id pattern", () => {
     expect(project.id.pattern).toBe(PROJECT_ID_PATTERN.source);
+  });
+
+  it("uses the validator's user agent prefix pattern", () => {
+    expect(project.userAgentPrefix.pattern).toBe(USER_AGENT_PREFIX_PATTERN.source);
   });
 
   it("lists the validator's version schemes", () => {
@@ -275,9 +272,14 @@ describe('loadProjects', () => {
       `projects[0].defaultChannel: "rc" is not one of the project's channels`,
     ],
     [
-      'a client identity that is not a boolean',
-      (p) => ({ ...p, analytics: { clientIdentity: 'yes' } }),
-      'projects[0].analytics.clientIdentity: must be a boolean',
+      'a user agent prefix without its slash',
+      (p) => ({ ...p, userAgentPrefix: 'example' }),
+      'projects[0].userAgentPrefix: must be a string matching',
+    ],
+    [
+      'a user agent prefix with a space',
+      (p) => ({ ...p, userAgentPrefix: 'example app/' }),
+      'projects[0].userAgentPrefix: must be a string matching',
     ],
     ['no examples', (p) => ({ ...p, examples: {} }), 'projects[0].examples: must list at least one tag'],
     [

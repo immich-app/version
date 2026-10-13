@@ -3,7 +3,11 @@
 #
 # version:* recording rules. Ported from immich-app/devtools
 # kubernetes/apps/monitoring/victoria-metrics/app/vmrule-version-worker.yaml
-# (fc69e6d8). The changes are marked "Changed" below.
+# (fc69e6d8), which counted Immich servers. These count every registered
+# project's clients, one series per version_project: a request is one of its
+# project's clients when the worker gave it a client_version, which it does when
+# the user agent starts with the project's userAgentPrefix (projects.json). The
+# other changes are marked "Changed" below.
 #
 # Shipped in the signed o11y bundle (o11y/render-manifests.sh). On the o11y
 # clusters the version tenant's own vmalert evaluates them: it selects VMRules
@@ -23,28 +27,22 @@ metadata:
 spec:
   groups:
     # Per-5m markers computed over raw data. Changed: devtools also counted
-    # /changelog requests, which the worker no longer serves, so
-    # server_seen and server_version_seen now match their _vreq twins. The
-    # memory cache rules now keep version_project, and requests_by_project is
-    # new, so the overview can filter them by project.
+    # /changelog requests, which the worker no longer serves, and kept a _vreq
+    # twin of each client marker without them; the twins are gone. The memory
+    # cache rules keep version_project, and requests_by_project and
+    # project_requests_by_colo are new, so the dashboards can filter by project.
     - name: version-worker.base
       interval: 5m
       rules:
-        - record: version:server_seen:count5m
+        - record: version:client_seen:count5m
           expr: |-
-            count by (client_ip) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
-        - record: version:server_seen_vreq:count5m
+            count by (version_project, client_ip) (count_over_time(version_version_request_invocation{client_version!=""}[5m]))
+        - record: version:client_seen_continent:count5m
           expr: |-
-            count by (client_ip) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
-        - record: version:server_seen_continent:count5m
+            count by (version_project, client_ip, continent) (count_over_time(version_version_request_invocation{client_version!=""}[5m]))
+        - record: version:client_version_seen:count5m
           expr: |-
-            count by (client_ip, continent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
-        - record: version:server_version_seen:count5m
-          expr: |-
-            count by (client_ip, user_agent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
-        - record: version:server_version_seen_vreq:count5m
-          expr: |-
-            count by (client_ip, user_agent) (count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m]))
+            count by (version_project, client_ip, client_version) (count_over_time(version_version_request_invocation{client_version!=""}[5m]))
         - record: version:requests:count5m
           expr: |-
             sum(count_over_time(version_handle_request_invocation[5m]))
@@ -60,31 +58,38 @@ spec:
         - record: version:memory_cache_miss:count5m
           expr: |-
             sum by (version_project) (count_over_time(version_memory_cache_miss_count[5m]))
-        - record: version:requests_immich:count5m
+        # Requests from a project's own clients, and from anything else that sends a user
+        # agent. `or vector(0)` adds an unlabelled 0, so both are written every 5
+        # minutes even with no traffic (the stale-rules alert relies on it); the
+        # dashboards filter it out by version_project.
+        - record: version:requests_clients:count5m
           expr: |-
-            (sum(count_over_time(version_version_request_invocation{user_agent=~"immich-server/.*"}[5m])) or vector(0))
+            (sum by (version_project) (count_over_time(version_version_request_invocation{client_version!=""}[5m])) or vector(0))
         - record: version:requests_other:count5m
           expr: |-
-            (sum(count_over_time(version_version_request_invocation{user_agent!~"immich-server/.*",user_agent!=""}[5m])) or vector(0))
+            (sum by (version_project) (count_over_time(version_version_request_invocation{client_version="",user_agent!=""}[5m])) or vector(0))
         # A lower bound: requests that land on one series within 20s count once
         # (o11y/README.md).
         - record: version:requests_by_project:count5m
           expr: |-
             sum by (version_project) (count_over_time(version_version_request_invocation{version_project!=""}[5m]))
+        - record: version:project_requests_by_colo:count5m
+          expr: |-
+            sum by (version_project, colo) (count_over_time(version_version_request_invocation{version_project!="",colo!=""}[5m]))
     # Derived from base rule series only (never raw). eval_offset ensures the
     # async remote-write of the base group has landed before evaluation.
     - name: version-worker.derived
       interval: 5m
       eval_offset: 2m30s
       rules:
-        - record: version:servers_unique:2h
+        - record: version:clients_unique:2h
           expr: |-
-            count(count_over_time(version:server_seen:count5m[2h]))
-        - record: version:servers_unique:24h
+            count by (version_project) (count_over_time(version:client_seen:count5m[2h]))
+        - record: version:clients_unique:24h
           expr: |-
-            count(count_over_time(version:server_seen:count5m[24h]))
-        # The five [30d]-offset rules (servers_new:5m, :1h and :1d, servers_upgrades:1h,
-        # servers_new_installs:1h) are sharded by client_ip. Changed: devtools ran them
+            count by (version_project) (count_over_time(version:client_seen:count5m[24h]))
+        # The five [30d]-offset rules (clients_new:5m, :1h and :1d, clients_upgrades:1h,
+        # clients_new_installs:1h) are sharded by client_ip. Changed: devtools ran them
         # unsharded. Under a set operation the [30d] rollup is budgeted at about 1016 B
         # per IP, and o11y vmselect caps a query at -search.maxMemoryPerQuery=1GB,
         # which a month of production servers can exceed (devtools counted about 1.37M
@@ -94,68 +99,74 @@ spec:
         # IPv6 hex digits); the fourth is the
         # complement of the other three, so together they partition every value,
         # including `::`-suffixed IPv6, upper-case hex and an empty client_ip. The
-        # shard filter is on both sides of every set operation, and `or vector(0)`
-        # keeps an empty shard from blanking the sum (a window with no new servers
-        # records 0).
-        - record: version:servers_new:5m
+        # shard filter is on both sides of every set operation.
+        # Changed: each shard falls back to a 0 for every registered project, rather
+        # than devtools' `or vector(0)`. The shards are counted by version_project and
+        # + matches on it, so an unlabelled vector(0) would match nothing and an empty
+        # shard would drop the project from the sum. The projects come from
+        # version_d1_release_count, which every cron run writes for each project, so
+        # a project whose clients sent nothing in the window records 0, not a gap.
+        - record: version:clients_new:5m
           expr: |-
-            (count(count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[5m]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[30d] offset 5m)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[5m]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[30d] offset 5m)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[5m]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 5m)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[5m]) unless count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 5m)) or vector(0))
-        - record: version:servers_new:1h
+            (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[5m]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[30d] offset 5m)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[5m]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[30d] offset 5m)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[5m]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 5m)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[5m]) unless count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 5m)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+        - record: version:clients_new:1h
           expr: |-
-            (count(count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[1h]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[1h]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[1h]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[1h]) unless count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or vector(0))
-        # Changed: `and on(client_ip)`. The left side keeps only client_ip and the
-        # right also carries the identity labels this tenant's vmalert adds, so a
-        # bare `and` matches nothing (devtools' vmalert added none).
-        - record: version:servers_upgrades:1h
+            (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[1h]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[1h]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[1h]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[1h]) unless count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+        # Clients on the latest version that were seen in the last 30 days. Changed:
+        # `and on(version_project, client_ip)`. The left side keeps only those labels and
+        # the right also carries the identity labels this tenant's vmalert adds, so a
+        # bare `and` matches nothing (devtools' vmalert added none). The latest version
+        # is version_latest_version_count's `version`, copied to client_version.
+        - record: version:clients_upgrades:1h
           expr: |-
-            (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[048c]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) and on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[159d]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) and on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[26ae]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) and on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip!~".*[01245689acde]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) and on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or vector(0))
-        # Changed: `unless on(client_ip)`, for the same reason: a bare `unless`
-        # removes nothing and counts every upgrade as a new install.
-        - record: version:servers_new_installs:1h
+            (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[048c]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) and on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[159d]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) and on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[26ae]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) and on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip!~".*[01245689acde]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) and on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+        # Changed: `unless on(version_project, client_ip)`, for the same reason: a bare
+        # `unless` removes nothing and counts every upgrade as a new install.
+        - record: version:clients_new_installs:1h
           expr: |-
-            (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[048c]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) unless on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[159d]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) unless on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip=~".*[26ae]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) unless on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or vector(0))
-            + (count(count by (client_ip) (count_over_time(version:server_version_seen_vreq:count5m{client_ip!~".*[01245689acde]"}[1h]) and on(user_agent) last_over_time(version_latest_version_count[3h])) unless on(client_ip) count_over_time(version:server_seen_vreq:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or vector(0))
-        - record: version:servers_by_version:24h
+            (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[048c]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) unless on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[159d]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) unless on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip=~".*[26ae]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) unless on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count by (version_project, client_ip) (count_over_time(version:client_version_seen:count5m{client_ip!~".*[01245689acde]"}[1h]) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) unless on(version_project, client_ip) count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1h)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+        - record: version:clients_by_version:24h
           expr: |-
-            count by (user_agent) (count_over_time(version:server_version_seen:count5m[24h]))
-        - record: version:servers_by_version_vreq:2h
+            count by (version_project, client_version) (count_over_time(version:client_version_seen:count5m[24h]))
+        - record: version:clients_by_version:2h
           expr: |-
-            count by (user_agent) (count_over_time(version:server_version_seen_vreq:count5m[2h]))
-        - record: version:servers_by_continent:24h
+            count by (version_project, client_version) (count_over_time(version:client_version_seen:count5m[2h]))
+        - record: version:clients_by_continent:24h
           expr: |-
-            count by (continent) (count_over_time(version:server_seen_continent:count5m[24h]))
-        - record: version:servers_uptodate_ratio:24h
+            count by (version_project, continent) (count_over_time(version:client_seen_continent:count5m[24h]))
+        - record: version:clients_uptodate_ratio:24h
           expr: |-
-            count(count by (client_ip, user_agent) (count_over_time(version:server_version_seen_vreq:count5m[24h])) and on(user_agent) last_over_time(version_latest_version_count[3h])) / count(count_over_time(version:server_seen_vreq:count5m[24h]))
-        - record: version:servers_ipv4:24h
+            count by (version_project) (count by (version_project, client_ip, client_version) (count_over_time(version:client_version_seen:count5m[24h])) and on(version_project, client_version) label_replace(last_over_time(version_latest_version_count[3h]), "client_version", "$1", "version", "(.*)")) / count by (version_project) (count_over_time(version:client_seen:count5m[24h]))
+        - record: version:clients_ipv4:24h
           expr: |-
-            count(count_over_time(version:server_seen:count5m{client_ip!~".*:.*",client_ip!=""}[24h]))
-        - record: version:servers_ipv6:24h
+            count by (version_project) (count_over_time(version:client_seen:count5m{client_ip!~".*:.*",client_ip!=""}[24h]))
+        - record: version:clients_ipv6:24h
           expr: |-
-            count(count_over_time(version:server_seen:count5m{client_ip=~".*:.*"}[24h]))
+            count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*:.*"}[24h]))
     # Slow-moving 30d aggregates.
     - name: version-worker.derived-30d
       interval: 30m
       eval_offset: 2m30s
       rules:
-        - record: version:servers_unique:30d
+        - record: version:clients_unique:30d
           expr: |-
-            count(count_over_time(version:server_seen:count5m[30d]))
-        # Sharded like servers_new:5m above.
-        - record: version:servers_new:1d
+            count by (version_project) (count_over_time(version:client_seen:count5m[30d]))
+        # Sharded like clients_new:5m above.
+        - record: version:clients_new:1d
           expr: |-
-            (count(count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[1d]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1d)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[1d]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1d)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[1d]) unless count_over_time(version:server_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1d)) or vector(0))
-            + (count(count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[1d]) unless count_over_time(version:server_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1d)) or vector(0))
+            (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[1d]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[048c]"}[30d] offset 1d)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[1d]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[159d]"}[30d] offset 1d)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[1d]) unless count_over_time(version:client_seen:count5m{client_ip=~".*[26ae]"}[30d] offset 1d)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))
+            + (count by (version_project) (count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[1d]) unless count_over_time(version:client_seen:count5m{client_ip!~".*[01245689acde]"}[30d] offset 1d)) or 0 * count by (version_project) (last_over_time(version_d1_release_count_count{version_project!=""}[1d])))

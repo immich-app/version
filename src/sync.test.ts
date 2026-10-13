@@ -32,7 +32,7 @@ const futoProjects = loadProjects({
     tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
     channels: { stable: [] },
     defaultChannel: 'stable',
-    analytics: { clientIdentity: false },
+    userAgentPrefix: `${id}/`,
     examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable'] } },
   })),
 });

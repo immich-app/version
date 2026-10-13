@@ -67,7 +67,7 @@ const [other] = loadProjects({
       tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+(?:-rc\d+)?)$`, scheme: 'semver' },
       channels: { stable: [], rc: ['rc'] },
       defaultChannel: 'stable',
-      analytics: { clientIdentity: false },
+      userAgentPrefix: 'other/',
       examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable', 'rc'] } },
     },
   ],
@@ -290,7 +290,6 @@ describe('VersionService', () => {
       expect(metrics.tagsOf('latest_version')).toEqual({
         version_project: 'immich',
         version: '1.130.0',
-        user_agent: 'immich-server/1.130.0',
       });
     });
 
@@ -756,7 +755,6 @@ describe('VersionService', () => {
       expect(metrics.tagsOf('latest_version')).toEqual({
         version_project: 'immich',
         version: '1.130.0',
-        user_agent: 'immich-server/1.130.0',
       });
     });
 

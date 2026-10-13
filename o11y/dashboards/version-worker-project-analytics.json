@@ -30,7 +30,7 @@
       },
       "id": 7,
       "panels": [],
-      "title": "Immich Servers",
+      "title": "$project clients",
       "type": "row"
     },
     {
@@ -86,13 +86,13 @@
       "pluginVersion": "10.4.3",
       "targets": [
         {
-          "expr": "last_over_time(version:servers_unique:24h[15m])",
+          "expr": "last_over_time(version:clients_unique:24h{version_project=\"$project\"}[15m])",
           "refId": "A",
           "instant": true,
           "range": false
         }
       ],
-      "title": "Unique Servers (24h)",
+      "title": "Unique Clients (24h)",
       "type": "stat"
     },
     {
@@ -159,13 +159,13 @@
       "pluginVersion": "10.4.3",
       "targets": [
         {
-          "expr": "last_over_time(version:servers_uptodate_ratio:24h[15m])",
+          "expr": "last_over_time(version:clients_uptodate_ratio:24h{version_project=\"$project\"}[15m])",
           "refId": "A",
           "instant": true,
           "range": false
         }
       ],
-      "title": "Servers Up-to-date (24h)",
+      "title": "Clients Up to Date (24h)",
       "type": "stat"
     },
     {
@@ -223,8 +223,8 @@
       },
       "targets": [
         {
-          "expr": "label_replace(last_over_time(version:servers_by_version:24h[15m]), \"version\", \"$1\", \"user_agent\", \"immich-server/(.*)\")",
-          "legendFormat": "{{version}}",
+          "expr": "last_over_time(version:clients_by_version:24h{version_project=\"$project\"}[15m])",
+          "legendFormat": "{{client_version}}",
           "refId": "A",
           "instant": true,
           "range": false
@@ -321,8 +321,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "version:servers_unique:2h",
-          "legendFormat": "unique servers (2h)",
+          "expr": "version:clients_unique:2h{version_project=\"$project\"}",
+          "legendFormat": "unique clients (2h)",
           "range": true,
           "refId": "A"
         },
@@ -331,8 +331,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "version:servers_unique:24h",
-          "legendFormat": "unique servers (24h)",
+          "expr": "version:clients_unique:24h{version_project=\"$project\"}",
+          "legendFormat": "unique clients (24h)",
           "refId": "B"
         },
         {
@@ -340,12 +340,12 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "last_over_time(version:servers_unique:30d[1h])",
-          "legendFormat": "unique servers (30d)",
+          "expr": "last_over_time(version:clients_unique:30d{version_project=\"$project\"}[1h])",
+          "legendFormat": "unique clients (30d)",
           "refId": "C"
         }
       ],
-      "title": "Unique Servers Over Time",
+      "title": "Unique Clients Over Time",
       "type": "timeseries"
     },
     {
@@ -436,8 +436,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "label_replace(version:servers_by_version_vreq:2h, \"version\", \"$1\", \"user_agent\", \"immich-server/(.*)\")",
-          "legendFormat": "{{version}}",
+          "expr": "version:clients_by_version:2h{version_project=\"$project\"}",
+          "legendFormat": "{{client_version}}",
           "range": true,
           "refId": "A"
         }
@@ -530,13 +530,13 @@
       },
       "targets": [
         {
-          "expr": "version:servers_new:5m",
-          "legendFormat": "new servers",
+          "expr": "version:clients_new:5m{version_project=\"$project\"}",
+          "legendFormat": "new clients",
           "refId": "A",
           "interval": "5m"
         }
       ],
-      "title": "New Servers (not seen in last 30d)",
+      "title": "New Clients (not seen in last 30d)",
       "type": "timeseries"
     },
     {
@@ -544,7 +544,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Join semantics as panel 'Servers Up-to-date': 3h latest-version window inflates counts for up to 3h after a release.",
+      "description": "Join semantics as panel 'Clients Up to Date': 3h latest-version window inflates counts for up to 3h after a release.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -605,13 +605,13 @@
       "maxDataPoints": 300,
       "targets": [
         {
-          "expr": "version:servers_upgrades:1h",
+          "expr": "version:clients_upgrades:1h{version_project=\"$project\"}",
           "legendFormat": "upgrades (seen before)",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "version:servers_new_installs:1h",
+          "expr": "version:clients_new_installs:1h{version_project=\"$project\"}",
           "legendFormat": "new installs",
           "refId": "B",
           "interval": "5m"
@@ -655,20 +655,20 @@
       "maxDataPoints": 300,
       "targets": [
         {
-          "expr": "version:servers_new:1h",
-          "legendFormat": "new servers / 1h",
+          "expr": "version:clients_new:1h{version_project=\"$project\"}",
+          "legendFormat": "new clients / 1h",
           "refId": "A",
           "interval": "5m"
         },
         {
-          "expr": "last_over_time(version:servers_new:1d[1h])",
-          "legendFormat": "new servers / day",
+          "expr": "last_over_time(version:clients_new:1d{version_project=\"$project\"}[1h])",
+          "legendFormat": "new clients / day",
           "refId": "B",
           "hide": true,
           "interval": "5m"
         }
       ],
-      "title": "New Server Rate",
+      "title": "New Client Rate",
       "type": "timeseries"
     },
     {
@@ -726,14 +726,14 @@
       },
       "targets": [
         {
-          "expr": "last_over_time(version:servers_by_continent:24h[15m])",
+          "expr": "last_over_time(version:clients_by_continent:24h{version_project=\"$project\"}[15m])",
           "legendFormat": "{{continent}}",
           "refId": "A",
           "instant": true,
           "range": false
         }
       ],
-      "title": "Servers by Continent (24h)",
+      "title": "Clients by Continent (24h)",
       "type": "piechart"
     },
     {
@@ -760,7 +760,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Immich servers"
+              "options": "Clients"
             },
             "properties": [
               {
@@ -822,14 +822,14 @@
       },
       "targets": [
         {
-          "expr": "sum(sum_over_time(version:requests_immich:count5m[24h]))",
-          "legendFormat": "Immich servers",
+          "expr": "sum(sum_over_time(version:requests_clients:count5m{version_project=\"$project\"}[24h]))",
+          "legendFormat": "Clients",
           "refId": "A",
           "instant": true,
           "range": false
         },
         {
-          "expr": "sum(sum_over_time(version:requests_other:count5m[24h]))",
+          "expr": "sum(sum_over_time(version:requests_other:count5m{version_project=\"$project\"}[24h]))",
           "legendFormat": "Other",
           "refId": "B",
           "instant": true,
@@ -837,7 +837,8 @@
         }
       ],
       "title": "Traffic Source (24h)",
-      "type": "piechart"
+      "type": "piechart",
+      "description": "Requests to the project's routes: from its clients, and from anything else that sends a user agent. Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once."
     },
     {
       "datasource": {
@@ -896,7 +897,7 @@
       "pluginVersion": "10.4.3",
       "targets": [
         {
-          "expr": "topk(15, sum(sum_over_time(version:requests_by_colo:count5m[24h])) by (colo))",
+          "expr": "topk(15, sum(sum_over_time(version:project_requests_by_colo:count5m{version_project=\"$project\"}[24h])) by (colo))",
           "legendFormat": "{{colo}}",
           "refId": "A",
           "instant": true,
@@ -905,7 +906,7 @@
       ],
       "title": "Top Cloudflare Edge Locations (24h)",
       "type": "bargauge",
-      "description": "Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once."
+      "description": "Requests to the project's routes. Lower bound: the o11y store keeps one sample per series per 20s, so requests that land on the same series within 20s count once."
     },
     {
       "datasource": {
@@ -993,14 +994,14 @@
       },
       "targets": [
         {
-          "expr": "last_over_time(version:servers_ipv4:24h[15m])",
+          "expr": "last_over_time(version:clients_ipv4:24h{version_project=\"$project\"}[15m])",
           "legendFormat": "IPv4",
           "refId": "A",
           "instant": true,
           "range": false
         },
         {
-          "expr": "last_over_time(version:servers_ipv6:24h[15m])",
+          "expr": "last_over_time(version:clients_ipv6:24h{version_project=\"$project\"}[15m])",
           "legendFormat": "IPv6",
           "refId": "B",
           "instant": true,
@@ -1016,7 +1017,7 @@
         "uid": "${datasource}"
       },
       "id": 35,
-      "title": "Servers on Latest Major (24h)",
+      "title": "Clients on Latest Major (24h)",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -1025,7 +1026,7 @@
         "y": 45
       },
       "maxDataPoints": 300,
-      "description": "Share of unique servers whose major version matches the latest release's major. Servers seen on two versions within the same major in the window count twice in the numerator (small upgrade-day inflation); for up to 3h after a release both the old and new latest are in the join window.",
+      "description": "Share of unique clients whose major version matches the latest release's major. Clients seen on two versions within the same major in the window count twice in the numerator (small upgrade-day inflation); for up to 3h after a release both the old and new latest are in the join window.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1080,7 +1081,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(label_replace(version:servers_by_version:24h, \"major\", \"$1\", \"user_agent\", \"immich-server/v?(\\d+)\\..*\") and on(major) label_replace(last_over_time(version_latest_version_count[3h]), \"major\", \"$1\", \"user_agent\", \"immich-server/v?(\\d+)\\..*\")) / version:servers_unique:24h",
+          "expr": "sum by (version_project) (label_replace(version:clients_by_version:24h{version_project=\"$project\"}, \"major\", \"$1\", \"client_version\", \"(\\\\d+)\\\\..*\") and on(version_project, major) label_replace(last_over_time(version_latest_version_count{version_project=\"$project\"}[3h]), \"major\", \"$1\", \"version\", \"(\\\\d+)\\\\..*\")) / on(version_project) sum by (version_project) (version:clients_unique:24h{version_project=\"$project\"})",
           "refId": "A",
           "instant": true,
           "range": false
@@ -1115,6 +1116,35 @@
         "regex": "/^VictoriaMetrics Fleet$/",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "immich",
+          "value": "immich"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(version_d1_release_count_count{project=\"version\"}, version_project)",
+        "description": "Projects from projects.json, by their version_project label.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Project",
+        "multi": false,
+        "name": "project",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(version_d1_release_count_count{project=\"version\"}, version_project)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
@@ -1131,9 +1161,10 @@
     ]
   },
   "timezone": "browser",
-  "title": "Version Worker Server Analytics",
-  "uid": "version-worker-server-analytics",
+  "title": "Version Worker Project Analytics",
+  "uid": "version-worker-project-analytics",
   "version": 4,
   "weekStart": "",
-  "id": null
+  "id": null,
+  "description": "One project's clients: the requests whose user agent starts with the project's userAgentPrefix from projects.json."
 }

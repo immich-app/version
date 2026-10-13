@@ -17,6 +17,8 @@ const GITHUB_REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
 const GITLAB_HOST_PATTERN = /^[a-z\d-]+(?:\.[a-z\d-]+)+$/;
 // group/name, with any subgroups between.
 const GITLAB_PATH_PATTERN = /^[\w.-]+(?:\/[\w.-]+)+$/;
+// A user agent product name and its slash, which the version follows.
+export const USER_AGENT_PREFIX_PATTERN = /^[\w.-]+\/$/;
 
 // The project behind the legacy /version and /v1/docs/versions routes.
 export const LEGACY_PROJECT_ID = 'immich';
@@ -57,8 +59,10 @@ export interface Project {
   // label it lists. `*` admits every prerelease.
   channels: ReadonlyMap<string, readonly string[]>;
   defaultChannel: string;
-  // clientIdentity tags request metrics with client IPs and user agents.
-  analytics: { clientIdentity: boolean; serverUserAgentPrefix?: string };
+  // What the project's clients start their user agent with, followed by their
+  // version: immich-server/ for immich-server/3.3.1. The analytics dashboard
+  // counts requests that send it as the project's clients.
+  userAgentPrefix: string;
   // Tag -> the version and channels it must normalize to, or null if the
   // project ignores it. src/projects.test.ts checks every one.
   examples: Readonly<Record<string, Example | null>>;
@@ -244,7 +248,7 @@ function loadProject(problems: Problems, path: string, value: unknown): Project 
     'tags',
     'channels',
     'defaultChannel',
-    'analytics',
+    'userAgentPrefix',
     'examples',
   ]);
   if (!entry) {
@@ -260,11 +264,11 @@ function loadProject(problems: Problems, path: string, value: unknown): Project 
   if (channels && defaultChannel && !channels.has(defaultChannel)) {
     problems.add(`${path}.defaultChannel`, `"${defaultChannel}" is not one of the project's channels`);
   }
-  const analytics = loadAnalytics(problems, `${path}.analytics`, entry.analytics);
+  const userAgentPrefix = problems.string(`${path}.userAgentPrefix`, entry.userAgentPrefix, USER_AGENT_PREFIX_PATTERN);
   const examples = loadExamples(problems, `${path}.examples`, entry.examples, channels);
 
-  return id && name && source && tags && channels && defaultChannel && analytics && examples
-    ? { id, name, source, tags, channels, defaultChannel, analytics, examples }
+  return id && name && source && tags && channels && defaultChannel && userAgentPrefix && examples
+    ? { id, name, source, tags, channels, defaultChannel, userAgentPrefix, examples }
     : undefined;
 }
 
@@ -371,24 +375,6 @@ function loadChannels(problems: Problems, path: string, value: unknown): Project
     problems.add(path, 'must define at least one channel');
   }
   return problems.list.length === before ? channels : undefined;
-}
-
-function loadAnalytics(problems: Problems, path: string, value: unknown): Project['analytics'] | undefined {
-  const analytics = problems.object(path, value, ['clientIdentity'], ['serverUserAgentPrefix']);
-  if (!analytics) {
-    return undefined;
-  }
-
-  const { clientIdentity, serverUserAgentPrefix } = analytics;
-  if (typeof clientIdentity !== 'boolean') {
-    problems.add(`${path}.clientIdentity`, 'must be a boolean');
-    return undefined;
-  }
-  if (serverUserAgentPrefix === undefined) {
-    return { clientIdentity };
-  }
-  const prefix = problems.string(`${path}.serverUserAgentPrefix`, serverUserAgentPrefix);
-  return prefix ? { clientIdentity, serverUserAgentPrefix: prefix } : undefined;
 }
 
 function loadExamples(

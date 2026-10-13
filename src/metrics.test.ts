@@ -311,19 +311,47 @@ describe('requestEdge', () => {
   });
 });
 
-describe('clientTags', () => {
-  const headers = { 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': 'immich-server/v3.2.4' };
+// A request from 192.0.2.1 with this user agent.
+const clientRequest = (userAgent: string) => edgeRequest({ 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': userAgent });
 
-  it('identifies the client of a project with clientIdentity, by IP, user agent, continent and network', () => {
-    expect(clientTags(edgeRequest(headers), { clientIdentity: true })).toEqual({
+describe('clientTags', () => {
+  it("identifies a project's client by IP, user agent, continent and network, and its version", () => {
+    expect(clientTags(clientRequest('immich-server/3.2.4'), 'immich-server/')).toEqual({
       client_ip: '192.0.2.1',
-      user_agent: 'immich-server/v3.2.4',
+      user_agent: 'immich-server/3.2.4',
       continent: 'EU',
       asOrg: 'Example AS',
+      client_version: '3.2.4',
     });
   });
 
-  it('tags nothing for a project without it', () => {
-    expect(clientTags(edgeRequest(headers), { clientIdentity: false })).toEqual({});
+  it.each([
+    ['a leading v', 'immich-server/v3.2.4', '3.2.4'],
+    ['a comment after the version', 'immich-server/3.2.4 (linux; arm64)', '3.2.4'],
+    ['a prerelease', 'immich-server/3.3.0-rc.2', '3.3.0-rc.2'],
+  ])('reads the version past %s', (_, userAgent, version) => {
+    expect(clientTags(clientRequest(userAgent), 'immich-server/').client_version).toBe(version);
+  });
+
+  it.each([
+    ['another user agent', 'Mozilla/5.0 (X11; Linux x86_64)'],
+    ["another project's prefix", 'futo-notes/1.8.1'],
+    ['the prefix without a version', 'immich-server/'],
+    ['the prefix and a lone v', 'immich-server/v'],
+    ['the prefix and a lone v before a comment', 'immich-server/v (linux)'],
+    ['the prefix later in the user agent', 'proxy immich-server/3.2.4'],
+  ])('identifies %s but gives it no version, so it is not counted as a client', (_, userAgent) => {
+    const tags = clientTags(clientRequest(userAgent), 'immich-server/');
+    expect(tags).toMatchObject({ client_ip: '192.0.2.1', user_agent: userAgent });
+    expect(tags).not.toHaveProperty('client_version');
+  });
+
+  it('identifies a request without headers by empty tags', () => {
+    expect(clientTags(new Request('https://example.com/'), 'immich-server/')).toEqual({
+      client_ip: '',
+      user_agent: '',
+      continent: '',
+      asOrg: '',
+    });
   });
 });
