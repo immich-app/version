@@ -1,8 +1,3 @@
-resource "random_password" "webhook_secret" {
-  length  = 32
-  special = false
-}
-
 resource "cloudflare_worker" "worker" {
   account_id = local.account_id
   name       = "${var.app_name}-api${local.resource_suffix}"
@@ -73,12 +68,15 @@ resource "cloudflare_worker_version" "worker" {
       type = "secret_text"
       text = var.github_app_version_pem_file
     },
+    ], var.stage == "" ? [
+    # Signs the GitHub App's release webhook, whose one URL is prod's /webhook.
+    # Dev main gets the same secret; PR stages get no deliveries.
     {
       name = "GITHUB_WEBHOOK_SECRET"
       type = "secret_text"
-      text = random_password.webhook_secret.result
+      text = var.github_app_version_webhook_secret
     },
-    ], [
+    ] : [], [
     for name, value in local.metrics_identity : {
       name = name
       type = "plain_text"
@@ -117,6 +115,13 @@ resource "cloudflare_worker_version" "worker" {
     precondition {
       condition     = !local.ship_metrics || nonsensitive(var.o11y_vmauth_token != "")
       error_message = "TF_VAR_o11y_vmauth_token is required outside PR stages: dev main and prod always ship metrics to o11y."
+    }
+
+    # /webhook rejects every delivery when its secret is empty, so a missing
+    # input would silently leave releases to the crons alone.
+    precondition {
+      condition     = var.stage != "" || nonsensitive(var.github_app_version_webhook_secret != "")
+      error_message = "TF_VAR_github_app_version_webhook_secret is required outside PR stages: dev main and prod verify the GitHub App's release webhook with it."
     }
   }
 
