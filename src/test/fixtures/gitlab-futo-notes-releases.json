@@ -1,0 +1,452 @@
+[
+  {
+    "name": "FUTO Notes v1.8.0",
+    "tag_name": "v1.8.0",
+    "description": "FUTO Notes release v1.8.0",
+    "created_at": "2026-09-17T18:39:18.938Z",
+    "released_at": "2026-09-17T18:39:18.938Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/95894c5838f21a1b42d161f0e9280d0098377ffd",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.8.0"
+  },
+  {
+    "name": "FUTO Notes v1.7.1",
+    "tag_name": "v1.7.1",
+    "description": "FUTO Notes release v1.7.1",
+    "created_at": "2026-08-31T21:29:17.385Z",
+    "released_at": "2026-08-31T21:29:17.385Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/f787c943072895612c8f2a1b92e82e0adc0379c0",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.7.1"
+  },
+  {
+    "name": "FUTO Notes v1.7.0",
+    "tag_name": "v1.7.0",
+    "description": "FUTO Notes release v1.7.0",
+    "created_at": "2026-08-13T17:27:49.929Z",
+    "released_at": "2026-08-13T17:27:49.929Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/c76a88b02bd3d4a36575ff9f1cf1319d155d21ce",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.7.0"
+  },
+  {
+    "name": "FUTO Notes v1.6.1",
+    "tag_name": "v1.6.1",
+    "description": "FUTO Notes release v1.6.1",
+    "created_at": "2026-07-27T22:28:16.546Z",
+    "released_at": "2026-07-27T22:28:16.546Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/e532c8198837b2a15a21430c9ce378bdde4060e0",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.6.1"
+  },
+  {
+    "name": "FUTO Notes v1.6.0",
+    "tag_name": "v1.6.0",
+    "description": "FUTO Notes release v1.6.0",
+    "created_at": "2026-07-06T18:29:22.894Z",
+    "released_at": "2026-07-06T18:29:22.894Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/1a4c9f720064cb5c14cc81373286a6137a5f4e31",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.6.0"
+  },
+  {
+    "name": "FUTO Notes v1.5.5",
+    "tag_name": "v1.5.5",
+    "description": "FUTO Notes release v1.5.5",
+    "created_at": "2026-06-26T16:29:49.390Z",
+    "released_at": "2026-06-26T16:29:49.390Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/88415c715ad7f4c583ebc3a1e7b1a9ca000d5648",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.5.5"
+  },
+  {
+    "name": "FUTO Notes v1.5.4",
+    "tag_name": "v1.5.4",
+    "description": "FUTO Notes release v1.5.4",
+    "created_at": "2026-06-18T22:21:39.724Z",
+    "released_at": "2026-06-18T22:21:39.724Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/48f35a904be91d871e38a3faa22639a14cf60c80",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.5.4"
+  },
+  {
+    "name": "FUTO Notes v1.5.2",
+    "tag_name": "v1.5.2",
+    "description": "FUTO Notes release v1.5.2",
+    "created_at": "2026-06-16T23:20:25.923Z",
+    "released_at": "2026-06-16T23:20:25.923Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/0ece3fff4b11f059ad19a1dba3c33122f7b92062",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.5.2"
+  },
+  {
+    "name": "FUTO Notes v1.5.1",
+    "tag_name": "v1.5.1",
+    "description": "FUTO Notes release v1.5.1",
+    "created_at": "2026-06-16T21:27:05.729Z",
+    "released_at": "2026-06-16T21:27:05.729Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/90ac4b322eff70df4d01d6df4277f83c9657bbf3",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.5.1"
+  },
+  {
+    "name": "FUTO Notes v1.5.0",
+    "tag_name": "v1.5.0",
+    "description": "FUTO Notes release v1.5.0",
+    "created_at": "2026-06-16T04:51:24.851Z",
+    "released_at": "2026-06-16T04:51:24.851Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/0d12d97a683a62a2576c35ce925bc5f66f83c41c",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.5.0"
+  },
+  {
+    "name": "FUTO Notes v1.4.0",
+    "tag_name": "v1.4.0",
+    "description": "FUTO Notes release v1.4.0",
+    "created_at": "2026-06-12T00:47:29.938Z",
+    "released_at": "2026-06-12T00:47:29.938Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/0d12d97a683a62a2576c35ce925bc5f66f83c41c",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.4.0"
+  },
+  {
+    "name": "FUTO Notes v1.4.1",
+    "tag_name": "v1.4.1",
+    "description": "FUTO Notes release v1.4.1",
+    "created_at": "2026-05-12T23:18:52.972Z",
+    "released_at": "2026-05-12T23:18:52.972Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/d45d60f70eca3513d90f38fb078bc1e4de301ff1",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.4.1"
+  },
+  {
+    "name": "FUTO Notes v1.3.3",
+    "tag_name": "v1.3.3",
+    "description": "FUTO Notes release v1.3.3",
+    "created_at": "2026-05-06T21:33:32.427Z",
+    "released_at": "2026-05-06T21:33:32.427Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/9e8e13691f3bc835d099968588607e0b9f73aedb",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.3.3"
+  },
+  {
+    "name": "FUTO Notes v1.3.2",
+    "tag_name": "v1.3.2",
+    "description": "FUTO Notes release v1.3.2",
+    "created_at": "2026-05-06T19:29:06.270Z",
+    "released_at": "2026-05-06T19:29:06.270Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/9e8e13691f3bc835d099968588607e0b9f73aedb",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.3.2"
+  },
+  {
+    "name": "FUTO Notes v1.3.1",
+    "tag_name": "v1.3.1",
+    "description": "FUTO Notes release v1.3.1",
+    "created_at": "2026-05-01T19:42:31.198Z",
+    "released_at": "2026-05-01T19:42:31.198Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/03ef6a5e8d115a08b680a44abe573538aef4c4ec",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.3.1"
+  },
+  {
+    "name": "FUTO Notes v1.3.0",
+    "tag_name": "v1.3.0",
+    "description": "FUTO Notes release v1.3.0",
+    "created_at": "2026-05-01T18:57:50.695Z",
+    "released_at": "2026-05-01T18:57:50.695Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/01e506aeebe8d86af00463b3335f40a6ce6dfa19",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.3.0"
+  },
+  {
+    "name": "Stonefruit v1.2.1",
+    "tag_name": "v1.2.1",
+    "description": "Stonefruit release v1.2.1",
+    "created_at": "2026-04-17T17:54:43.834Z",
+    "released_at": "2026-04-17T17:54:43.834Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/55af93a507a284070682de062f2bc8b15cd9f7b5",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.2.1"
+  },
+  {
+    "name": "Stonefruit v1.2.0",
+    "tag_name": "v1.2.0",
+    "description": "Stonefruit release v1.2.0",
+    "created_at": "2026-04-17T16:37:36.652Z",
+    "released_at": "2026-04-17T16:37:36.652Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/2ad329c88259924fb3dbaaca74cfb219e2fa9b99",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.2.0"
+  },
+  {
+    "name": "Stonefruit v1.1.18",
+    "tag_name": "v1.1.18",
+    "description": "Stonefruit release v1.1.18",
+    "created_at": "2026-04-03T18:14:21.616Z",
+    "released_at": "2026-04-03T18:14:21.616Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/bb416334a49bdef2934cc645fa5393a13805a118",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.1.18"
+  },
+  {
+    "name": "Stonefruit v1.1.6",
+    "tag_name": "v1.1.6",
+    "description": "Stonefruit release v1.1.6",
+    "created_at": "2026-04-02T23:37:10.429Z",
+    "released_at": "2026-04-02T23:37:10.429Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/e76dfec97785c25267b4cf8a2e5f0cbabe918795",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.1.6"
+  },
+  {
+    "name": "Stonefruit v1.1.5",
+    "tag_name": "v1.1.5",
+    "description": "Stonefruit release v1.1.5",
+    "created_at": "2026-04-02T18:56:09.928Z",
+    "released_at": "2026-04-02T18:56:09.928Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/ecfc3859b5e95a985b386749890db03e43861679",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.1.5"
+  },
+  {
+    "name": "Stonefruit v1.0.8",
+    "tag_name": "v1.0.8",
+    "description": "Stonefruit release v1.0.8",
+    "created_at": "2026-03-23T21:55:23.216Z",
+    "released_at": "2026-03-23T21:55:23.216Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/7a7367035882873c8971aab7fb489ff9340539f3",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.8"
+  },
+  {
+    "name": "Stonefruit v1.0.7",
+    "tag_name": "v1.0.7",
+    "description": "Stonefruit release v1.0.7",
+    "created_at": "2026-03-23T21:35:10.459Z",
+    "released_at": "2026-03-23T21:35:10.459Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/aa594c0fd414d267ef8501b457d29697762d8ec5",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.7"
+  },
+  {
+    "name": "Stonefruit v1.0.5",
+    "tag_name": "v1.0.5",
+    "description": "Stonefruit release v1.0.5",
+    "created_at": "2026-03-20T16:53:19.419Z",
+    "released_at": "2026-03-20T16:53:19.419Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/799c4040313aad851a15defbbea3481d9bf5fe0d",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.5"
+  },
+  {
+    "name": "Stonefruit v1.0.4",
+    "tag_name": "v1.0.4",
+    "description": "Stonefruit release v1.0.4",
+    "created_at": "2026-03-20T15:32:35.674Z",
+    "released_at": "2026-03-20T15:32:35.674Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/892f72940342c557b77551e0e45d5e96beb92ee2",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.4"
+  },
+  {
+    "name": "Stonefruit v1.0.3",
+    "tag_name": "v1.0.3",
+    "description": "Stonefruit release v1.0.3",
+    "created_at": "2026-03-20T14:45:53.784Z",
+    "released_at": "2026-03-20T14:45:53.784Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/cf59ecd021e7a16bce703692aacd5c2659501df7",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.3"
+  },
+  {
+    "name": "Stonefruit v1.0.2",
+    "tag_name": "v1.0.2",
+    "description": "Stonefruit release v1.0.2",
+    "created_at": "2026-03-19T23:33:56.892Z",
+    "released_at": "2026-03-19T23:33:56.892Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/509f55e3e2a3fdbe0e701be639cde55a57806166",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.2"
+  },
+  {
+    "name": "Stonefruit v1.0.0",
+    "tag_name": "v1.0.0",
+    "description": "Stonefruit release v1.0.0",
+    "created_at": "2026-03-19T21:51:00.556Z",
+    "released_at": "2026-03-19T21:51:00.556Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/458c593666b11331b98b2b2d5558ecf85dc199c3",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.0"
+  },
+  {
+    "name": "Stonefruit v1.0.1",
+    "tag_name": "v1.0.1",
+    "description": "Stonefruit release v1.0.1",
+    "created_at": "2026-03-19T21:41:02.689Z",
+    "released_at": "2026-03-19T21:41:02.689Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/4f6c6d198dee3c6ca7fe6f37ffb59919b2f5841b",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v1.0.1"
+  },
+  {
+    "name": "Stonefruit v0.2.14",
+    "tag_name": "v0.2.14",
+    "description": "Stonefruit release v0.2.14",
+    "created_at": "2026-03-10T19:37:46.294Z",
+    "released_at": "2026-03-10T19:37:46.294Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/23801f494aa8896aa55afe4b0e3b272600f0db32",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.2.14"
+  },
+  {
+    "name": "Stonefruit v0.2.13",
+    "tag_name": "v0.2.13",
+    "description": "Stonefruit release v0.2.13",
+    "created_at": "2026-03-06T19:32:30.521Z",
+    "released_at": "2026-03-06T19:32:30.521Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/e4bf1e60256ad8cc5b3f3faf62dbf21ca2f68eba",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.2.13"
+  },
+  {
+    "name": "Futo Notes v0.2.0",
+    "tag_name": "v0.2.0",
+    "description": "Futo Notes release v0.2.0",
+    "created_at": "2026-02-18T16:15:19.077Z",
+    "released_at": "2026-02-18T16:15:19.077Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/ae95d5b55f0943badf150b31c5b756e7571bac76",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.2.0"
+  },
+  {
+    "name": "Futo Notes v0.1.8",
+    "tag_name": "v0.1.8",
+    "description": "Futo Notes release v0.1.8",
+    "created_at": "2026-02-12T21:02:05.917Z",
+    "released_at": "2026-02-12T21:02:05.917Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/7a9c831cf0aaec3a22ae530042a09c23abc5fcdc",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.8"
+  },
+  {
+    "name": "Futo Notes v0.1.7",
+    "tag_name": "v0.1.7",
+    "description": "Futo Notes release v0.1.7",
+    "created_at": "2026-02-11T17:56:33.101Z",
+    "released_at": "2026-02-11T17:56:33.101Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/1efb60eaf3f453e2e42dca256eb70f7663fdeee0",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.7"
+  },
+  {
+    "name": "Futo Notes v0.1.6",
+    "tag_name": "v0.1.6",
+    "description": "Futo Notes release v0.1.6",
+    "created_at": "2026-02-10T21:49:07.956Z",
+    "released_at": "2026-02-10T21:49:07.956Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/0bc9b51e3aadf2691ea1de98a84e022648a66bd0",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.6"
+  },
+  {
+    "name": "Futo Notes v0.1.5",
+    "tag_name": "v0.1.5",
+    "description": "Futo Notes release v0.1.5",
+    "created_at": "2026-02-09T18:45:12.431Z",
+    "released_at": "2026-02-09T18:45:12.431Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/eaabe9eeef7dd587816dc4049f666997091d1740",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.5"
+  },
+  {
+    "name": "Futo Notes v0.1.4",
+    "tag_name": "v0.1.4",
+    "description": "Futo Notes release v0.1.4",
+    "created_at": "2026-02-09T18:26:10.279Z",
+    "released_at": "2026-02-09T18:26:10.279Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/c3b3f2c424e3c505d91e4b6cd5b89f27d4881339",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.4"
+  },
+  {
+    "name": "Futo Notes v0.1.3",
+    "tag_name": "v0.1.3",
+    "description": "Futo Notes release v0.1.3",
+    "created_at": "2026-02-06T23:37:42.475Z",
+    "released_at": "2026-02-06T23:37:42.475Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/c6a6eb68af2a729a1f2e9ce136eb5f57067461e7",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.3"
+  },
+  {
+    "name": "Futo Notes v0.1.2",
+    "tag_name": "v0.1.2",
+    "description": "Futo Notes release v0.1.2",
+    "created_at": "2026-02-05T22:08:41.522Z",
+    "released_at": "2026-02-05T22:08:41.522Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/456b549fb3e4e5df5cdf5574c8b412a264d1ff4a",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.1.2"
+  },
+  {
+    "name": "Futo Notes v0.0.18",
+    "tag_name": "v0.0.18",
+    "description": "Futo Notes release v0.0.18",
+    "created_at": "2026-01-28T17:36:17.674Z",
+    "released_at": "2026-01-28T17:36:17.674Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/1306150d8f1bd2d808682c8bb5b1c7f2bd55b0a3",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.18"
+  },
+  {
+    "name": "Futo Notes v0.0.17",
+    "tag_name": "v0.0.17",
+    "description": "Futo Notes release v0.0.17",
+    "created_at": "2026-01-28T16:53:22.407Z",
+    "released_at": "2026-01-28T16:53:22.407Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/ec37b47dce0f06468cde0ef0028e6df5ec3efce2",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.17"
+  },
+  {
+    "name": "Futo Notes v0.0.14",
+    "tag_name": "v0.0.14",
+    "description": "Futo Notes release v0.0.14",
+    "created_at": "2026-01-28T00:46:49.558Z",
+    "released_at": "2026-01-28T00:46:49.558Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/d15fae406082addcf83b5a04b2c91344ecacad02",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.14"
+  },
+  {
+    "name": "Futo Notes v0.0.8",
+    "tag_name": "v0.0.8",
+    "description": "Futo Notes release v0.0.8",
+    "created_at": "2026-01-27T21:26:37.483Z",
+    "released_at": "2026-01-27T21:26:37.483Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/56e04209d06caaf3f7b21525fb64f58c7c42e6d4",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.8"
+  },
+  {
+    "name": "Futo Notes v0.0.7",
+    "tag_name": "v0.0.7",
+    "description": "Futo Notes release v0.0.7",
+    "created_at": "2026-01-27T20:37:40.432Z",
+    "released_at": "2026-01-27T20:37:40.432Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/19007a0ab0eeaac25ff361319d60b726e0092792",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.7"
+  },
+  {
+    "name": "Futo Notes v0.0.1-test",
+    "tag_name": "v0.0.1-test",
+    "description": "Futo Notes release v0.0.1-test",
+    "created_at": "2026-01-26T22:56:35.867Z",
+    "released_at": "2026-01-26T22:56:35.867Z",
+    "upcoming_release": false,
+    "commit_path": "/futo-notes/futo-notes/-/commit/faa210895818dd5aa413188b84c577694d37ce21",
+    "tag_path": "/futo-notes/futo-notes/-/tags/v0.0.1-test"
+  }
+]
