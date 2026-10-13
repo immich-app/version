@@ -16,7 +16,7 @@
   "definitions": {
     "project": {
       "type": "object",
-      "required": ["id", "name", "source", "tags", "channels", "defaultChannel", "analytics", "examples"],
+      "required": ["id", "name", "source", "tags", "channels", "defaultChannel", "userAgentPrefix", "examples"],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -61,21 +61,10 @@
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]{0,31}$"
         },
-        "analytics": {
-          "type": "object",
-          "required": ["clientIdentity"],
-          "additionalProperties": false,
-          "properties": {
-            "clientIdentity": {
-              "description": "Tag request metrics with client IPs and user agents. A privacy and cardinality decision; tests allowlist the projects that may set it.",
-              "type": "boolean"
-            },
-            "serverUserAgentPrefix": {
-              "description": "The user agent prefix the project's servers send, followed by their version.",
-              "type": "string",
-              "pattern": "\\S"
-            }
-          }
+        "userAgentPrefix": {
+          "description": "What the project's clients start their User-Agent with, followed by their version: immich-server/ for immich-server/3.3.1. The analytics dashboard counts requests that send it as the project's clients.",
+          "type": "string",
+          "pattern": "^[\\w.-]+\\/$"
         },
         "examples": {
           "description": "Real tags and what they must normalize to, or null for a tag the project ignores. Tests check every one.",

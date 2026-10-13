@@ -235,8 +235,8 @@ export class VersionService {
   }
 
   // How many releases the project has stored, and the newest version on its
-  // default channel. The user agent its servers would send at that version lets
-  // the recording rules count the servers that are up to date. Both are about
+  // default channel, which the recording rules match against client_version to
+  // count the clients that are up to date. Both are about
   // the project, not a request, so the webhook writes the crons' series: none
   // of the request's geo tags, or "Releases Stored" would count a project
   // once per series. A sync passes the releases it ended with, so they aren't
@@ -251,12 +251,7 @@ export class VersionService {
       return;
     }
 
-    const metric = Metric.create('latest_version').addTag('version', latest.version);
-    const { serverUserAgentPrefix } = project.analytics;
-    if (serverUserAgentPrefix) {
-      metric.addTag('user_agent', `${serverUserAgentPrefix}${latest.version}`);
-    }
-    metrics.push(metric.intField('count', 1));
+    metrics.push(Metric.create('latest_version').addTag('version', latest.version).intField('count', 1));
   }
 }
 

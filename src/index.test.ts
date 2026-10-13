@@ -76,7 +76,7 @@ const [notes] = loadProjects({
       tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+(?:-beta\.\d+)?)$`, scheme: 'semver' },
       channels: { stable: [], beta: ['beta'] },
       defaultChannel: 'beta',
-      analytics: { clientIdentity: false },
+      userAgentPrefix: 'notes/',
       examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable', 'beta'] } },
     },
   ],
@@ -616,7 +616,7 @@ describe('Version Worker', () => {
           tags: { pattern: String.raw`^${id}-v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
           channels: { stable: [] },
           defaultChannel: 'stable',
-          analytics: { clientIdentity: false },
+          userAgentPrefix: `${id}/`,
           examples: { [`${id}-v1.0.0`]: { version: '1.0.0', channels: ['stable'] } },
         })),
       });
@@ -819,7 +819,7 @@ describe('Version Worker', () => {
       expect(await get('/v1/projects/immich/version')).toMatchObject({ status: 200 });
     });
 
-    it("tags a project's request with its id and the colo, and its client only if the project allows", async () => {
+    it("tags a project's request with its id, the colo and its client, versioned only by its own prefix", async () => {
       const client = { 'CF-Connecting-IP': '192.0.2.1', 'User-Agent': 'notes/1.0.0' };
       const immichSeries = seriesTags(
         await loggedLines(() =>
@@ -830,20 +830,18 @@ describe('Version Worker', () => {
         await loggedLines(() => get('/v1/projects/notes/version', { ...EDGE, headers: client })),
       );
 
+      const notesClient = { client_ip: '192.0.2.1', user_agent: 'notes/1.0.0', continent: 'EU', asOrg: 'Example AS' };
+      // notes/ is not Immich's prefix, so Immich identifies the client but
+      // doesn't count it as one of its own.
       expect(immichSeries.version_version_request).toEqual([
-        {
-          version_project: 'immich',
-          colo: 'LHR',
-          client_ip: '192.0.2.1',
-          user_agent: 'notes/1.0.0',
-          continent: 'EU',
-          asOrg: 'Example AS',
-        },
+        { version_project: 'immich', colo: 'LHR', ...notesClient },
       ]);
       expect(immichSeries.version_http_response).toEqual([
         { method: 'GET', path: '/v1/projects/:project/version', status: '200', colo: 'LHR' },
       ]);
-      expect(notesSeries.version_version_request).toEqual([{ version_project: 'notes', colo: 'LHR' }]);
+      expect(notesSeries.version_version_request).toEqual([
+        { version_project: 'notes', colo: 'LHR', ...notesClient, client_version: '1.0.0' },
+      ]);
     });
   });
 
@@ -917,6 +915,7 @@ describe('Version Worker', () => {
             user_agent: 'immich-server/v1.120.0',
             continent: 'EU',
             asOrg: 'Example AS',
+            client_version: '1.120.0',
           },
         ],
         version_handle_request: [{ continent: 'EU', colo: 'LHR', asOrg: 'Example AS' }],
@@ -1048,9 +1047,7 @@ describe('Cron sync', () => {
     const series = seriesTags(await loggedLines(() => runImmichCron('*/30 * * * *')));
 
     expect(await storedTags()).toEqual(['v1.100.0', 'v1.110.0', 'v1.115.0']);
-    expect(series.version_latest_version).toEqual([
-      { version_project: 'immich', version: '1.115.0', user_agent: 'immich-server/1.115.0' },
-    ]);
+    expect(series.version_latest_version).toEqual([{ version_project: 'immich', version: '1.115.0' }]);
   });
 
   it('keeps fetching everything until a full sync succeeds, even after a webhook stored the latest release', async () => {
@@ -1078,7 +1075,7 @@ describe('Cron sync', () => {
       version_tags_skipped: [immich],
       version_project_sync_outcome: [immich],
       version_d1_release_count: [immich],
-      version_latest_version: [{ ...immich, version: '1.120.0', user_agent: 'immich-server/1.120.0' }],
+      version_latest_version: [{ ...immich, version: '1.120.0' }],
     });
   });
 
@@ -1095,9 +1092,7 @@ describe('Cron sync', () => {
     ]);
     for (const series of [webhook, cron]) {
       expect(series.version_d1_release_count).toEqual([{ version_project: 'immich' }]);
-      expect(series.version_latest_version).toEqual([
-        { version_project: 'immich', version: '1.130.0', user_agent: 'immich-server/1.130.0' },
-      ]);
+      expect(series.version_latest_version).toEqual([{ version_project: 'immich', version: '1.130.0' }]);
     }
   });
 

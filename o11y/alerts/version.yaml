@@ -98,20 +98,20 @@ spec:
                   params: []
     # The version tenant's vmalert (yucca-o11y vmalert-version.yaml) runs with
     # notifier.blackhole, so nothing else reports a broken rule group, and the
-    # server analytics panels would just go blank.
-    # - version:requests_immich:count5m is written every 5m even with no traffic
+    # project analytics panels would just go blank.
+    # - version:requests_clients:count5m is written every 5m even with no traffic
     #   (`or vector(0)`), so its absence means the vmalert stopped writing.
-    # - version:servers_unique:24h and :30d are derived from base series read back
+    # - version:clients_unique:24h and :30d are derived from base series read back
     #   out of tenant 7:1, so they also disappear when the base results are
-    #   misrouted or the derived groups fail. Their guards need immich-server
-    #   traffic in the last 2h, so a quiet staging stays green.
+    #   misrouted or the derived groups fail. Their guards need traffic from some
+    #   project's clients in the last 2h, so a quiet staging stays green.
     # - The two vmalert_* counters catch rule errors (a 422 from vmselect's
     #   per-query memory cap, say) and remote-write drops. They assume o11y scrapes
     #   the operator-made VMServiceScrape as job="vmalert-version"; check with
     #   count(vmalert_iteration_total{job="vmalert-version"}) on Fleet. If the job
     #   differs, those two lines return nothing and the freshness lines still work.
     # The first line is unguarded like the heartbeat; the derived-series lines are
-    # guarded on immich-server traffic only.
+    # guarded on client traffic only.
     - uid: version-recording-rules-stale
       title: Version recording rules stopped writing
       condition: B
@@ -139,11 +139,11 @@ spec:
               type: prometheus
               uid: VictoriaMetricsFleet
             expr: >-
-              absent_over_time(version:requests_immich:count5m{project="version", cluster="version"}[30m])
-              or (absent_over_time(version:servers_unique:24h{project="version", cluster="version"}[30m])
-                and on () (max_over_time(version:requests_immich:count5m{project="version", cluster="version"}[2h]) > 0))
-              or (absent_over_time(version:servers_unique:30d{project="version", cluster="version"}[2h])
-                and on () (max_over_time(version:requests_immich:count5m{project="version", cluster="version"}[2h]) > 0))
+              absent_over_time(version:requests_clients:count5m{project="version", cluster="version"}[30m])
+              or (absent_over_time(version:clients_unique:24h{project="version", cluster="version"}[30m])
+                and on () (max_over_time(version:requests_clients:count5m{project="version", cluster="version"}[2h]) > 0))
+              or (absent_over_time(version:clients_unique:30d{project="version", cluster="version"}[2h])
+                and on () (max_over_time(version:requests_clients:count5m{project="version", cluster="version"}[2h]) > 0))
               or (sum(increase(vmalert_recording_rules_errors_total{job="vmalert-version"}[30m])) > 0)
               or (sum(increase(vmalert_remotewrite_dropped_rows_total{job="vmalert-version"}[30m])) > 0)
             instant: true

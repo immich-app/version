@@ -175,7 +175,7 @@ export function createWorker({
         }
 
         return await projectMetrics(metrics, project.id).monitorAsyncFunction(
-          { name: 'version_request', tags: clientTags(request, project.analytics) },
+          { name: 'version_request', tags: clientTags(request, project.userAgentPrefix) },
           async (): Promise<Response> => {
             const channel = url.searchParams.get('channel') ?? project.defaultChannel;
             if (!project.channels.has(channel)) {
@@ -231,7 +231,7 @@ export function createWorker({
 
             case '/version': {
               return await projectMetrics(metrics, legacyProject.id).monitorAsyncFunction(
-                { name: 'version_request', tags: clientTags(request, legacyProject.analytics) },
+                { name: 'version_request', tags: clientTags(request, legacyProject.userAgentPrefix) },
                 async (): Promise<Response> => {
                   // we assume stable for backwards compatibility
                   const channel = url.searchParams.get('channel') ?? 'stable';

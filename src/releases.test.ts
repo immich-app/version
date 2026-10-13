@@ -22,7 +22,7 @@ const project = (id: string, tags: { pattern: string; scheme: string }, channels
         tags,
         channels,
         defaultChannel: 'stable',
-        analytics: { clientIdentity: false },
+        userAgentPrefix: `${id}/`,
         examples: { 'v1.0.0': null },
       },
     ],
