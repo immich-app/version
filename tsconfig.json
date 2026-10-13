@@ -12,7 +12,7 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
-    "types": ["./worker-configuration.d.ts", "vitest/globals"],
+    "types": ["./worker-configuration.d.ts", "vitest/globals", "@cloudflare/vitest-plugin/types"],
     "composite": true,
     "declaration": true,
     "declarationMap": true

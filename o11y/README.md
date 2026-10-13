@@ -37,6 +37,7 @@ Metric names are `<measurement>_<field>`, for example `version_handle_request_in
 - A series about one project carries its id from `projects.json` as `version_project`. The label is never `project`, which is the identity label above. The crons' run-level series, such as the `version_cron_sync_invocation` heartbeat, carry none.
 - A series about a request carries `colo`, the Cloudflare edge it landed on. `version_handle_request` adds `continent` and `asOrg`, and so does `version_version_request` for projects that set `analytics.clientIdentity` (Immich), along with `client_ip` and `user_agent`.
 - A project's release stats, `version_d1_release_count` and `version_latest_version`, carry no edge, so the webhook and the crons write the same series.
+- A failed project sync is counted as `version_cron_error_count` with a bounded `error_class`, never the error message, which would make a series per error. Every run also writes each project's `version_project_sync_outcome_failed`, 1 if its sync failed and 0 if not, so the latest outcome can be read off one series.
 
 `version_http_response` tags `method` and `path` only with the worker's own methods and routes, and `other` for anything else, so a scanner cannot create a series per request.
 
@@ -48,7 +49,7 @@ The store keeps one sample per series per 20s. Counting events with `count_over_
 
 Each `dashboards/<uid>.json` file is a Grafana export whose `uid` matches the file name. Every query uses the `$datasource` variable, which is limited to and defaults to `VictoriaMetrics Fleet` (uid `VictoriaMetricsFleet`). The default `VictoriaMetrics` datasource only sees the o11y cluster's own tenant and shows nothing here.
 
-The overview has a `$project` variable over `version_project`. Its All value is `.*`, which also matches series from before the label existed. It filters the cache, D1, webhook, cron, GitHub and release panels, and "Requests by Project"; the panels about the worker as a whole ignore it. The server analytics dashboard is Immich's alone.
+The overview has a `$project` variable over `version_project`. Its All value is `.*`, which also matches series from before the label existed. It filters the cache, D1, webhook, cron, release source, sync error, skipped tag and release panels, and "Requests by Project"; the panels about the worker as a whole ignore it. The server analytics dashboard is Immich's alone.
 
 To change a dashboard, edit it in Grafana, export it with "Export for sharing externally" off, keep the `uid`, and save it over the file. Set `"id": null`. Add new dashboards the same way, with tags `app`, `metrics` and `version`.
 
@@ -56,10 +57,12 @@ To change a dashboard, edit it in Grafana, export it with "Export for sharing ex
 
 Each `alerts/*.yaml` file holds one `GrafanaAlertRuleGroup` with `folderRef: version`. Every rule is labelled `project: version` and with a `severity`. o11y routes `project=version` to the `rootly-version` contact point, and Rootly sets urgency from the severity: `critical` is High and `warning` is Medium. Every query uses `datasourceUid: VictoriaMetricsFleet`. Never set `heartbeat: rootly`, which is o11y's own dead man's switch route.
 
-`alerts/version.yaml` holds two rules:
+`alerts/version.yaml` holds four rules:
 
-- `version-cron-heartbeat` (critical). The `*/30` cron writes `version_cron_sync_invocation` on every run, so an hour without it, held for 15 minutes, means at least two missed runs. The absence is deliberately unguarded, so the alert keeps firing for as long as the outage lasts. A "seen in the last week" guard would not hold on Fleet: multitenant vmselect only discovers tenants that received samples on the query's UTC day, so the guard would resolve the alert at the next UTC midnight of a full outage. The alert ships in the same bundle as the tenant's vmalert, so it only exists where version reports.
+- `version-cron-heartbeat` (critical). The `*/30` cron writes `version_cron_sync_invocation` at the start of every run and ships it before it syncs any project, so no project can hold it back. An hour without it, held for 15 minutes, means at least two missed runs. The absence is deliberately unguarded, so the alert keeps firing for as long as the outage lasts. A "seen in the last week" guard would not hold on Fleet: multitenant vmselect only discovers tenants that received samples on the query's UTC day, so the guard would resolve the alert at the next UTC midnight of a full outage. The alert ships in the same bundle as the tenant's vmalert, so it only exists where version reports.
 - `version-recording-rules-stale` (warning). The tenant vmalert blackholes its own notifications, so this rule watches its output: `version:requests_immich:count5m` (written every 5 minutes), the derived `version:servers_unique:24h` and `:30d` while there is immich-server traffic, and vmalert's rule-error and dropped-row counters for `job="vmalert-version"`.
+- `version-project-sync-failing` (warning), one alert per `version_project`. Each cron run syncs every project on its own, so one failing project leaves the heartbeat green. This fires when a project's sync failed in at least 3 of the last 4 runs and in the latest one, both read from `version_project_sync_outcome_failed`. The error series have no sample for a run that succeeds, so they can't say the latest run did; the outcome series can, and the alert resolves at the first run that succeeds. `version_cron_error_count`'s `error_class` (`rate_limited`, `auth`, `not_found`, `http`, `timeout`, `d1` or `other`) says why.
+- `version-project-tags-skipped` (warning), one alert per `version_project`. Every sync counts the releases newer than the newest one the project recognizes whose tags no project on its source takes (`version_tags_skipped_count`). A project that changes its tag format keeps that above 0 while its syncs succeed and the service serves an old release, so a day of it fires the alert. Its last sample before that day must be above 0 too, or a new series (a newly registered project's), or one back from a day without samples, would fire on its first sample. It resolves once a newer release is recognized.
 
 ## Recording rules
 

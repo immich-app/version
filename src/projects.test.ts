@@ -9,7 +9,11 @@ import {
   type Project,
   PROJECT_ID_PATTERN,
   projects,
+  projectsForGitHubRepository,
+  requireProject,
+  sameSource,
   SOURCE_TYPES,
+  sourceKey,
 } from './projects.js';
 import { versionSchemes } from './version-schemes.js';
 
@@ -35,12 +39,11 @@ const load = (...entries: unknown[]) => loadProjects({ projects: entries });
 
 // Example tags that more than one project on the same source would take.
 function overlappingClaims(list: readonly Project[]): string[] {
-  // repoId, not the name, so a renamed or transferred repo is still one source.
-  const sourceKey = (project: Project) => `${project.source.type}:${project.source.repoId}`;
+  // sourceKey() goes by repoId, not the name, so a renamed or transferred repo is still one source.
   const overlaps: string[] = [];
-  const sources = new Set(list.map((project) => sourceKey(project)));
+  const sources = new Set(list.map((project) => sourceKey(project.source)));
   for (const source of sources) {
-    const group = list.filter((project) => sourceKey(project) === source);
+    const group = list.filter((project) => sourceKey(project.source) === source);
     const tags = new Set(group.flatMap((project) => Object.keys(project.examples)));
     for (const tag of tags) {
       const claimants = group.filter((project) => normalize(project, tag) !== null).map(({ id }) => id);
@@ -329,5 +332,51 @@ describe('normalize', () => {
     expect(normalize(alternation, 'v1.2.3')?.version).toBe('1.2.3');
     expect(normalize(alternation, 'release-v1.2.3')).toBeNull();
     expect(normalize(alternation, 'latest')).toBeNull();
+  });
+});
+
+describe('finding projects', () => {
+  const [first, second, other] = load(
+    { ...entry(), id: 'first' },
+    { ...entry(), id: 'second', source: { type: 'github-releases', repo: 'futo-org/renamed', repoId: 1 } },
+    { ...entry(), id: 'other', source: { type: 'github-releases', repo: 'futo-org/other', repoId: 2 } },
+  );
+  const list = [first, second, other];
+
+  it('finds a project by its id, and only a registered one', () => {
+    expect(findProject('second', list)).toBe(second);
+    expect(findProject('__proto__', list)).toBeUndefined();
+    expect(requireProject('other', list)).toBe(other);
+    expect(() => requireProject('immich', list)).toThrow('projects.json must register "immich"');
+  });
+
+  it("groups the projects that read the same repository, by the repository's id", () => {
+    expect(sameSource(first, list)).toEqual([first, second]);
+    expect(sameSource(other, list)).toEqual([other]);
+  });
+
+  it.each([
+    ['its id, after a rename or a transfer', { id: 1, full_name: 'futo-org/moved' }, ['first', 'second']],
+    ['its id, never the name another project reads', { id: 2, full_name: 'futo-org/example' }, ['other']],
+    ['nothing, when another repository took its name', { id: 99, full_name: 'futo-org/other' }, []],
+    ['its name, in any case, without an id', { full_name: 'FUTO-org/Other' }, ['other']],
+    ['neither', { id: 99, full_name: 'futo-org/unknown' }, []],
+    ['an id given as a string', { id: '2', full_name: 'futo-org/unknown' }, []],
+    [
+      "nothing, for an id that isn't a number, even with a registered name",
+      { id: '99', full_name: 'futo-org/other' },
+      [],
+    ],
+    ['its name, when the id is null', { id: null, full_name: 'futo-org/other' }, ['other']],
+    ['nothing', undefined, []],
+    ['something else', 'futo-org/example', []],
+  ])("finds a webhook's projects by %s", (_, repository, ids) => {
+    expect(projectsForGitHubRepository(repository, list).map(({ id }) => id)).toEqual(ids);
+  });
+
+  it("finds Immich's own repository", () => {
+    expect(
+      projectsForGitHubRepository({ id: 455_229_168, full_name: 'immich-app/immich' }).map(({ id }) => id),
+    ).toEqual([LEGACY_PROJECT_ID]);
   });
 });

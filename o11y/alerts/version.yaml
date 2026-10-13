@@ -20,9 +20,10 @@ spec:
   folderRef: version
   interval: 1m
   rules:
-    # The */30 cron emits version_cron_sync_invocation on every run, failed or
-    # not, so an empty hour plus `for` means at least two missed runs: the cron
-    # trigger, the worker, or the metrics push is gone.
+    # The */30 cron emits version_cron_sync_invocation at the start of every run,
+    # and ships it before it syncs any project, so neither a failed nor a hung
+    # project can hold it back. An empty hour plus `for` means at least two
+    # missed runs: the cron trigger, the worker, or the metrics push is gone.
     #
     # Deliberately unguarded, so it keeps firing for as long as the outage lasts.
     # A "seen in the last week" guard would not hold: VictoriaMetricsFleet queries
@@ -154,6 +155,154 @@ spec:
           queryType: ''
           relativeTimeRange:
             from: 3600
+            to: 0
+          model:
+            refId: B
+            type: threshold
+            datasource:
+              type: __expr__
+              uid: __expr__
+            expression: A
+            intervalMs: 1000
+            maxDataPoints: 43200
+            conditions:
+              - type: query
+                evaluator:
+                  type: gt
+                  params:
+                    - 0
+                operator:
+                  type: and
+                query:
+                  params:
+                    - A
+                reducer:
+                  type: last
+                  params: []
+    # One project's sync failed in at least 3 of the last 4 */30 runs, and the
+    # latest run failed too. Every run writes each project's outcome,
+    # version_project_sync_outcome_failed (1 or 0), because the error series
+    # only have samples for failures and can't say how the latest run went. So
+    # the alert resolves at the first run that succeeds, rather than when the old
+    # errors age out of a window. Every project syncs on its own, so this fires
+    # per version_project while the heartbeat stays green.
+    - uid: version-project-sync-failing
+      title: Version worker can't sync a project's releases
+      condition: B
+      for: 5m
+      labels:
+        project: version
+        severity: warning
+      annotations:
+        summary: The {{ $labels.version_project }} release sync failed in 3 of the last 4 runs, the latest included.
+        description: >-
+          version_project_sync_outcome_failed says this project's syncs keep failing, so the version
+          service serves its releases as of the last good sync. version_cron_error_count's error_class
+          says why: rate_limited, auth, not_found, http, timeout, d1 or other. Check the worker's
+          `[cron]` logs in the Cloudflare dashboard, and the project's source in projects.json.
+      execErrState: Error
+      noDataState: OK
+      data:
+        - refId: A
+          datasourceUid: VictoriaMetricsFleet
+          queryType: ''
+          relativeTimeRange:
+            from: 7200
+            to: 0
+          model:
+            refId: A
+            datasource:
+              type: prometheus
+              uid: VictoriaMetricsFleet
+            expr: >-
+              (sum by (version_project) (sum_over_time(version_project_sync_outcome_failed{project="version", cluster="version"}[2h])) >= 3)
+              and on (version_project) (max by (version_project) (last_over_time(version_project_sync_outcome_failed{project="version", cluster="version"}[35m])) == 1)
+            instant: true
+            range: false
+            intervalMs: 1000
+            maxDataPoints: 43200
+        - refId: B
+          datasourceUid: __expr__
+          queryType: ''
+          relativeTimeRange:
+            from: 7200
+            to: 0
+          model:
+            refId: B
+            type: threshold
+            datasource:
+              type: __expr__
+              uid: __expr__
+            expression: A
+            intervalMs: 1000
+            maxDataPoints: 43200
+            conditions:
+              - type: query
+                evaluator:
+                  type: gt
+                  params:
+                    - 0
+                operator:
+                  type: and
+                query:
+                  params:
+                    - A
+                reducer:
+                  type: last
+                  params: []
+    # A project's newest releases have gone unrecognized for a day:
+    # version_tags_skipped counts the releases newer than the newest one the
+    # project's tag pattern takes, whose tags no project on its source takes
+    # (skippedTags() in src/releases.ts). It rises with every release when a
+    # project changes its tag format, while the sync itself keeps succeeding and
+    # the service keeps serving the old version. It drops to 0 once a newer
+    # release is recognized, which resolves the alert within a run.
+    # min_over_time only says every sample of the last day was above 0, which a
+    # new series (a newly registered project's) passes with its first one, and
+    # so does one back from a day without samples. So the last sample of the
+    # day before must be above 0 too: then it has been above 0 for at least a
+    # full day however its samples are spaced, and a gap in one already firing
+    # doesn't resolve it. `for: 24h` on top of the 24h window would hold an old
+    # series for two.
+    - uid: version-project-tags-skipped
+      title: Version worker doesn't recognize a project's newest releases
+      condition: B
+      for: 5m
+      labels:
+        project: version
+        severity: warning
+      annotations:
+        summary: The newest {{ $labels.version_project }} releases have tags its pattern doesn't match.
+        description: >-
+          For a day, every sync found releases newer than any the project's tags.pattern in projects.json
+          matches, so the version service still serves an older release. Compare the project's recent
+          tags with its pattern and examples, and widen the pattern if the new format is intended.
+      execErrState: Error
+      noDataState: OK
+      data:
+        - refId: A
+          datasourceUid: VictoriaMetricsFleet
+          queryType: ''
+          relativeTimeRange:
+            from: 172800
+            to: 0
+          model:
+            refId: A
+            datasource:
+              type: prometheus
+              uid: VictoriaMetricsFleet
+            expr: >-
+              (min by (version_project) (min_over_time(version_tags_skipped_count{project="version", cluster="version"}[24h])) > 0)
+              and on (version_project) (min by (version_project) (last_over_time(version_tags_skipped_count{project="version", cluster="version"}[24h] offset 24h)) > 0)
+            instant: true
+            range: false
+            intervalMs: 1000
+            maxDataPoints: 43200
+        - refId: B
+          datasourceUid: __expr__
+          queryType: ''
+          relativeTimeRange:
+            from: 172800
             to: 0
           model:
             refId: B

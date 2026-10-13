@@ -1,0 +1,456 @@
+import { env } from 'cloudflare:workers';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createWorker } from './index.js';
+import { CloudflareMetricsRepository, type Metric } from './metrics.js';
+import { loadProjects, projects, type Project } from './projects.js';
+import type { IReleaseRepository } from './release-repository.js';
+import type { ReleaseSource } from './sources.js';
+import { syncProjects } from './sync.js';
+import { clearReleases, fullSyncedAt, runCron, seriesTags, storedTags } from './test/helpers.js';
+import type { ProjectRelease } from './types.js';
+import { versionCaches, VersionService } from './version-service.js';
+
+// Immich, plus two projects under another owner. Tests pass this registry to
+// createWorker() rather than edit projects.json.
+const futoProjects = loadProjects({
+  projects: ['notes', 'keyboard'].map((id, index) => ({
+    id,
+    name: id,
+    source: { type: 'github-releases', repo: `futo-org/${id}`, repoId: index + 1 },
+    tags: { pattern: String.raw`^v(?<version>\d+\.\d+\.\d+)$`, scheme: 'semver' },
+    channels: { stable: [] },
+    defaultChannel: 'stable',
+    analytics: { clientIdentity: false },
+    examples: { 'v1.0.0': { version: '1.0.0', channels: ['stable'] } },
+  })),
+});
+const registry = [...projects, ...futoProjects];
+// Each project's repository id, which GitHub is asked by.
+const REPOS = { immich: 455_229_168, notes: 1, keyboard: 2 };
+type Id = keyof typeof REPOS;
+
+const releasesOf = (id: Id) => `https://api.github.com/repositories/${REPOS[id]}/releases`;
+const full = (id: Id, page = 1) => `${releasesOf(id)}?per_page=100&page=${page}`;
+const recent = (id: Id) => `${releasesOf(id)}?per_page=20`;
+// One release, by its GitHub id.
+const releaseOf = (id: Id, releaseId: number) => `${releasesOf(id)}/${releaseId}`;
+
+// How a repository answers: its releases, an error status or response, or a
+// request that only ends when it is aborted ('hang') or never ('stall').
+type Answer = Record<string, unknown>[] | number | Response | 'hang' | 'stall';
+
+const release = (id: number, tag: string) => ({ id, tag_name: tag, published_at: `2025-0${id}-01T00:00:00Z` });
+
+/**
+ * GitHub's answer from a repository's releases, newest first: a page of the
+ * listing, by GitHub's offsets, or one release by its id, a 404 if it isn't
+ * there.
+ */
+function fromReleases(url: string, releases: Record<string, unknown>[]): Response {
+  const { pathname, searchParams } = new URL(url);
+  const releaseId = /\/releases\/(\d+)$/.exec(pathname)?.[1];
+  if (releaseId !== undefined) {
+    const found = releases.find(({ id }) => String(id) === releaseId);
+    return found ? Response.json(found) : Response.json({ message: 'Not Found' }, { status: 404 });
+  }
+  const perPage = Number(searchParams.get('per_page'));
+  const page = Number(searchParams.get('page') ?? 1);
+  return Response.json(releases.slice((page - 1) * perPage, page * perPage));
+}
+
+// Runs a cron with the registry above.
+const run = (cron = '*/30 * * * *', options: Parameters<typeof createWorker>[0] = {}, bindings: Env = env) =>
+  runCron(cron, { handler: createWorker({ projects: registry, ...options }), bindings });
+
+describe('scheduled', () => {
+  let answers: Record<Id, Answer>;
+  // How GitHub answers a request for one release, by its URL, where a test
+  // says. Otherwise it is the release its repository lists, or a 404.
+  let releaseAnswers: Record<string, Answer>;
+  // Called with each request GitHub has answered from a repository's releases.
+  let afterAnswer: (url: string) => void;
+  let requested: string[];
+  // What had been logged when each request was made.
+  let loggedBefore: Map<string, string>;
+  let logged: string[];
+
+  beforeEach(async () => {
+    versionCaches.clear();
+    await clearReleases();
+    answers = { immich: [release(1, 'v1.120.0')], notes: [release(2, 'v1.0.0')], keyboard: [release(3, 'v2.0.0')] };
+    releaseAnswers = {};
+    afterAnswer = () => {};
+    requested = [];
+    logged = [];
+    loggedBefore = new Map();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation((line: unknown) => {
+      logged.push(String(line));
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const { url, signal } = new Request(input, init);
+      requested.push(url);
+      loggedBefore.set(url, logged.join('\n'));
+      const id = (Object.keys(REPOS) as Id[]).find((key) => url.startsWith(releasesOf(key)));
+      const answer = id ? (releaseAnswers[url] ?? answers[id]) : undefined;
+      if (answer === 'hang' || answer === 'stall') {
+        return new Promise((_, reject) => {
+          if (answer === 'hang') {
+            signal.addEventListener('abort', () => reject(signal.reason));
+          }
+        });
+      }
+      if (typeof answer === 'number') {
+        return Promise.resolve(new Response(null, { status: answer }));
+      }
+      if (answer instanceof Response) {
+        return Promise.resolve(answer);
+      }
+      if (!answer) {
+        return Promise.reject(new Error(`unexpected fetch: ${url}`));
+      }
+      const response = fromReleases(url, answer);
+      afterAnswer(url);
+      return Promise.resolve(response);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const series = () => seriesTags(logged.flatMap((body) => body.split('\n')).filter((l) => l.startsWith('version_')));
+  const errors = () => series().version_cron_error ?? [];
+
+  it("syncs every registered project from its own repository, and only that project's tags", async () => {
+    answers.notes = [release(2, 'v1.0.0'), release(1, 'notes-v1')];
+
+    await run();
+
+    expect(requested).toEqual([full('immich'), full('notes'), full('keyboard')]);
+    expect(await storedTags('immich')).toEqual(['v1.120.0']);
+    expect(await storedTags('notes')).toEqual(['v1.0.0']);
+    expect(await storedTags('keyboard')).toEqual(['v2.0.0']);
+    for (const id of Object.keys(REPOS)) {
+      expect(await fullSyncedAt(id)).not.toBeNull();
+    }
+    expect(series().version_project_sync).toEqual([
+      { version_project: 'immich' },
+      { version_project: 'notes' },
+      { version_project: 'keyboard' },
+    ]);
+    expect(errors()).toEqual([]);
+  });
+
+  it('lists only the newest releases of every project once each has had a full sync, and all of them nightly', async () => {
+    await run();
+    requested = [];
+
+    await run();
+    expect(requested).toEqual([recent('immich'), recent('notes'), recent('keyboard')]);
+
+    requested = [];
+    await run('0 3 * * *');
+    expect(requested).toEqual([full('immich'), full('notes'), full('keyboard')]);
+  });
+
+  it('reads each repository by its registered id, even once another repository has taken its name', async () => {
+    await run();
+    // futo-org/notes was renamed, and a new repository took its old name.
+    const taken = 'https://api.github.com/repos/futo-org/notes/releases';
+    vi.mocked(fetch).mockImplementation(
+      ((answer) => (input, init) => {
+        const { url } = new Request(input, init);
+        return url.startsWith(taken) ? Promise.resolve(Response.json([release(9, 'v9.0.0')])) : answer(input, init);
+      })(vi.mocked(fetch).getMockImplementation()!),
+    );
+    requested = [];
+
+    await run('0 3 * * *');
+
+    expect(requested).toEqual([full('immich'), full('notes'), full('keyboard')]);
+    expect(await storedTags('notes')).toEqual(['v1.0.0']);
+    expect(errors()).toEqual([]);
+  });
+
+  it('nightly, deletes the unlisted releases GitHub confirms are gone, and keeps the rest', async () => {
+    answers.notes = [release(4, 'v1.3.0'), release(3, 'v1.2.0'), release(2, 'v1.1.0'), release(1, 'v1.0.0')];
+    await run();
+    answers.notes = [release(4, 'v1.3.0')];
+    // v1.2.0 was deleted (a 404), v1.1.0 can't be checked, and v1.0.0 is still published.
+    releaseAnswers[releaseOf('notes', 2)] = 500;
+    releaseAnswers[releaseOf('notes', 1)] = Response.json(release(1, 'v1.0.0'));
+    requested = [];
+
+    await run('0 3 * * *');
+
+    expect(await storedTags('notes')).toEqual(['v1.0.0', 'v1.1.0', 'v1.3.0']);
+    expect(requested).toEqual([
+      full('immich'),
+      full('notes'),
+      releaseOf('notes', 3),
+      releaseOf('notes', 2),
+      releaseOf('notes', 1),
+      full('keyboard'),
+    ]);
+    expect(errors()).toEqual([]);
+    expect(await fullSyncedAt('notes')).not.toBeNull();
+  });
+
+  it('keeps the last release when one before it is deleted between the pages of a nightly listing', async () => {
+    // 101 releases, newest first: a full page, and the oldest alone on the second.
+    const listing = Array.from({ length: 101 }, (_, index) => ({
+      id: 101 - index,
+      tag_name: `v1.${100 - index}.0`,
+      published_at: new Date(Date.UTC(2025, 0, 1) + (100 - index) * 86_400_000).toISOString(),
+    }));
+    answers.notes = listing;
+    await run();
+    expect(await storedTags('notes')).toHaveLength(101);
+
+    // v1.99.0 is deleted once GitHub has answered the first page, so the second
+    // starts a release later, and v1.0.0 is on neither.
+    const deleted = listing[1];
+    afterAnswer = (url) => {
+      if (url === full('notes')) {
+        answers.notes = listing.filter((item) => item !== deleted);
+      }
+    };
+    requested = [];
+
+    await run('0 3 * * *');
+
+    // The listing reached its end, but GitHub still has v1.0.0.
+    expect(requested.filter((url) => url.startsWith(releasesOf('notes')))).toEqual([
+      full('notes'),
+      full('notes', 2),
+      releaseOf('notes', 1),
+    ]);
+    expect(await storedTags('notes')).toHaveLength(101);
+    expect(await storedTags('notes')).toContain('v1.0.0');
+
+    // The next nightly listing has it, and confirms v1.99.0 is gone.
+    afterAnswer = () => {};
+    requested = [];
+    await run('0 3 * * *');
+
+    expect(requested.filter((url) => url.startsWith(releasesOf('notes')))).toEqual([
+      full('notes'),
+      full('notes', 2),
+      releaseOf('notes', deleted.id),
+    ]);
+    const stored = await storedTags('notes');
+    expect(stored).toHaveLength(100);
+    expect(stored).toContain('v1.0.0');
+    expect(stored).not.toContain('v1.99.0');
+    expect(errors()).toEqual([]);
+  });
+
+  it('skips the rest of the projects behind the token when it hits a rate limit while confirming', async () => {
+    answers.notes = [release(2, 'v1.0.0'), release(1, 'v0.9.0')];
+    await run();
+    answers.notes = [release(2, 'v1.0.0')];
+    releaseAnswers[releaseOf('notes', 1)] = 429;
+    requested = [];
+
+    await run('0 3 * * *');
+
+    expect(requested).toEqual([full('immich'), full('notes'), releaseOf('notes', 1)]);
+    expect(errors()).toEqual([
+      { version_project: 'notes', error_class: 'rate_limited' },
+      { version_project: 'keyboard', error_class: 'rate_limited' },
+    ]);
+    expect(await storedTags('notes')).toEqual(['v0.9.0', 'v1.0.0']);
+  });
+
+  it('keeps syncing the other projects when one fails, and counts the failure by its class', async () => {
+    answers.notes = 500;
+
+    await run();
+
+    expect(await storedTags('immich')).toEqual(['v1.120.0']);
+    expect(await storedTags('keyboard')).toEqual(['v2.0.0']);
+    expect(await fullSyncedAt('notes')).toBeNull();
+    expect(errors()).toEqual([{ version_project: 'notes', error_class: 'http' }]);
+    // A failed sync still reports what is stored.
+    expect(series().version_d1_release_count).toContainEqual({ version_project: 'notes' });
+    expect(logged.join('\n')).toMatch(/^version_project_sync,\S*version_project=notes\S* \S*\berrors=1i/m);
+  });
+
+  it("reports every project's outcome on every run, so the latest one can be told apart", async () => {
+    answers.notes = 500;
+    await run();
+
+    answers.notes = [release(2, 'v1.0.0')];
+    await run();
+
+    const outcomes = logged
+      .flatMap((body) => body.split('\n'))
+      .filter((line) => line.startsWith('version_project_sync_outcome,'))
+      .map((line) => `${/version_project=(\w+)/.exec(line)![1]} ${/ failed=(\d)i/.exec(line)![1]}`);
+    expect(outcomes).toEqual(['immich 0', 'notes 1', 'keyboard 0', 'immich 0', 'notes 0', 'keyboard 0']);
+  });
+
+  it('retries a failed full sync on the next run', async () => {
+    answers.notes = 404;
+    await run();
+    expect(errors()).toEqual([{ version_project: 'notes', error_class: 'not_found' }]);
+
+    answers.notes = [release(2, 'v1.0.0')];
+    requested = [];
+    await run();
+
+    expect(requested).toContain(full('notes'));
+    expect(await storedTags('notes')).toEqual(['v1.0.0']);
+  });
+
+  it('skips every project behind the same token once it hits a rate limit, whatever their owner', async () => {
+    answers.immich = 429;
+
+    await run();
+
+    // Unauthenticated, every repository shares one rate limit.
+    expect(requested).toEqual([full('immich')]);
+    expect(errors()).toEqual([
+      { version_project: 'immich', error_class: 'rate_limited' },
+      { version_project: 'notes', error_class: 'rate_limited' },
+      { version_project: 'keyboard', error_class: 'rate_limited' },
+    ]);
+  });
+
+  it('skips them after a secondary rate limit too, which leaves requests remaining', async () => {
+    answers.immich = Response.json(
+      { message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' },
+      { status: 403, headers: { 'X-RateLimit-Remaining': '4999' } },
+    );
+
+    await run();
+
+    expect(requested).toEqual([full('immich')]);
+    expect(errors()).toEqual([
+      { version_project: 'immich', error_class: 'rate_limited' },
+      { version_project: 'notes', error_class: 'rate_limited' },
+      { version_project: 'keyboard', error_class: 'rate_limited' },
+    ]);
+  });
+
+  it('gives up on a hung request after its timeout, and moves on', async () => {
+    answers.immich = 'hang';
+
+    await run('*/30 * * * *', { requestTimeoutMs: 20 });
+
+    expect(errors()).toEqual([{ version_project: 'immich', error_class: 'timeout' }]);
+    expect(await storedTags('notes')).toEqual(['v1.0.0']);
+    expect(await storedTags('keyboard')).toEqual(['v2.0.0']);
+  });
+
+  it('gives up on a project at its deadline, even when its work ignores the signal', async () => {
+    answers.notes = 'stall';
+
+    await run('*/30 * * * *', { projectDeadlineMs: 50 });
+
+    expect(errors()).toEqual([{ version_project: 'notes', error_class: 'timeout' }]);
+    expect(await storedTags('keyboard')).toEqual(['v2.0.0']);
+  });
+
+  it("ships the run's heartbeat before any project syncs, and each project's metrics before the next starts", async () => {
+    answers.keyboard = 'stall';
+
+    await run('*/30 * * * *', { projectDeadlineMs: 50 });
+
+    expect(loggedBefore.get(full('immich'))).toMatch(/^version_cron_sync,\S* invocation=1i/m);
+    expect(loggedBefore.get(full('notes'))).toMatch(/^version_project_sync,.*version_project=immich/m);
+    expect(loggedBefore.get(full('keyboard'))).toMatch(/^version_project_sync,.*version_project=notes/m);
+    // The run's duration follows once every project is done.
+    expect(series().version_cron_sync).toEqual([{}, {}]);
+  });
+
+  it('fails every GitHub project as an auth error when the token cannot be minted, and still reports the run', async () => {
+    const bindings = {
+      ...env,
+      GITHUB_APP_ID: '1',
+      GITHUB_APP_PRIVATE_KEY: 'not a key',
+      GITHUB_APP_INSTALLATION_ID: '2',
+    };
+
+    await run('*/30 * * * *', {}, bindings);
+
+    expect(requested.filter((url) => url.includes('/releases'))).toEqual([]);
+    expect(errors()).toEqual([
+      { version_project: 'immich', error_class: 'auth' },
+      { version_project: 'notes', error_class: 'auth' },
+      { version_project: 'keyboard', error_class: 'auth' },
+    ]);
+    expect(series().version_cron_sync).toEqual([{}, {}]);
+  });
+
+  it('reports the nightly run under its own name', async () => {
+    await run('0 3 * * *');
+
+    expect(series().version_cron_full_sync).toEqual([{}, {}]);
+    expect(series().version_cron_sync).toBeUndefined();
+  });
+});
+
+// Every project's source lists nothing, but notes' is down.
+const notesDown = (project: Project): ReleaseSource => ({
+  rateLimitKey: project.id,
+  fetchRecent: () => (project.id === 'notes' ? Promise.reject(new Error('GitHub down')) : Promise.resolve([])),
+  fetchAll: () => Promise.resolve({ releases: [], complete: true }),
+  confirmRetracted: () => Promise.resolve([]),
+});
+
+describe('syncProjects', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("gives up on a project's release stats at the deadline, then ships its metrics and syncs the next", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const pushed: Metric[] = [];
+    // What each flush shipped, as "<project> <series>".
+    const flushed: string[][] = [];
+    const metrics = new CloudflareMetricsRepository('version', [
+      {
+        pushMetric: (metric) => {
+          pushed.push(metric);
+        },
+        flush: () => {},
+      },
+    ]);
+    // notes' sync fails, so its stats read what is stored, and that read never settles.
+    let notesReads = 0;
+    const repository = {
+      list: vi.fn((projectId: string) =>
+        projectId === 'notes' && ++notesReads > 1 ? new Promise<ProjectRelease[]>(() => {}) : Promise.resolve([]),
+      ),
+      upsertMany: vi.fn(() => Promise.resolve()),
+      deleteMany: vi.fn(() => Promise.resolve(0)),
+      now: vi.fn(() => Promise.resolve(new Date().toISOString())),
+      getFullSyncedAt: vi.fn(() => Promise.resolve('earlier')),
+      markFullSynced: vi.fn(() => Promise.resolve()),
+    } satisfies IReleaseRepository;
+    await syncProjects(registry, new VersionService(repository, metrics), metrics, {
+      nightly: false,
+      source: notesDown,
+      deadlineMs: 50,
+      afterProject: () => {
+        flushed.push(pushed.splice(0).map((metric) => `${metric.tags.get('version_project')} ${metric.name}`));
+      },
+    });
+
+    expect(flushed).toHaveLength(3);
+    expect(flushed[1]).toEqual(
+      expect.arrayContaining([
+        'notes version_project_sync',
+        'notes version_cron_error',
+        'notes version_project_sync_outcome',
+      ]),
+    );
+    expect(flushed[1]).not.toContain('notes version_d1_release_count');
+    expect(flushed[2]).toContain('keyboard version_d1_release_count');
+    expect(repository.list).toHaveBeenCalledWith('keyboard');
+    expect(error).toHaveBeenCalledWith('[cron] notes: release stats failed (timeout):', expect.anything());
+  });
+});
