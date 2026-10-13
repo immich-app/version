@@ -20,20 +20,15 @@ variable "o11y_vmauth_token" {
   default     = ""
 }
 
-variable "github_app_readonly_id" {
-  description = "GitHub App ID for the Immich Read-Only app"
+variable "github_app_version_id" {
+  description = "GitHub App ID for the version service's own app, which reads releases through its installation on each repository's owner"
   type        = string
 }
 
-variable "github_app_readonly_pem_file" {
-  description = "GitHub App private key (PEM) for the Immich Read-Only app"
+variable "github_app_version_pem_file" {
+  description = "GitHub App private key (PKCS#8 PEM) for the version service's own app"
   type        = string
   sensitive   = true
-}
-
-variable "github_app_readonly_installation_id" {
-  description = "GitHub App installation ID for the Immich Read-Only app"
-  type        = string
 }
 
 variable "github_app_tofu_id" {
