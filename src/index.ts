@@ -1,7 +1,9 @@
 import { DeferredRepository } from './deferred.js';
 import { DocsService } from './docs-service.js';
 import { GitHubTokens } from './github-auth.js';
+import { toProjectRelease } from './github-source.js';
 import { GitLabTokens } from './gitlab-auth.js';
+import { GitLabReleasesSource } from './gitlab-source.js';
 import {
   clientTags,
   CloudflareMetricsRepository,
@@ -18,15 +20,16 @@ import {
   normalize,
   projects,
   projectsForGitHubRepository,
+  projectsForGitLabProject,
   requireProject,
   type Project,
 } from './projects.js';
 import { ReleaseRepository } from './release-repository.js';
-import { REQUEST_TIMEOUT_MS } from './sources.js';
+import { errorClass, REQUEST_TIMEOUT_MS, withDeadline } from './sources.js';
 import { createSource, NIGHTLY_CRON, PROJECT_DEADLINE_MS, syncProjects } from './sync.js';
 import type { GitHubRelease, ProjectVersionResponse, VersionResponse } from './types.js';
 import { VersionService } from './version-service.js';
-import { verifyWebhookSignature } from './webhook.js';
+import { verifyGitLabSignature, verifyWebhookSignature } from './webhook.js';
 
 const DEFAULT_HEADERS: Record<string, string> = {
   'Content-Type': 'application/json',
@@ -45,7 +48,19 @@ function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, 
 // /wp-login.php) mint a new series per request in the shared o11y store.
 // /changelog is gone but stays listed, so leftover callers still show up under
 // its path, as 404s.
-const METRIC_ROUTES = new Set(['/', '/health', '/version', '/v1/docs/versions', '/changelog', '/webhook']);
+const METRIC_ROUTES = new Set([
+  '/',
+  '/health',
+  '/version',
+  '/v1/docs/versions',
+  '/changelog',
+  '/webhook',
+  '/webhook/gitlab',
+]);
+
+// How long a GitLab delivery's reconcile may take, after the worker has
+// answered GitLab: its request to GitLab, D1 and the release stats.
+const GITLAB_RECONCILE_MS = 20_000;
 const METRIC_METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS']);
 
 // The per-project route, tagged by its template whatever the id.
@@ -335,8 +350,98 @@ export function createWorker({
                 metrics.push(Metric.create('webhook_ignored').addTag('reason', 'unmatched_tag').intField('count', 1));
               }
               for (const project of targets) {
-                await versionService.handleReleasePublished(project, release);
+                await versionService.handleReleasePublished(project, toProjectRelease(release));
               }
+              return jsonResponse({ success: true });
+            }
+
+            // A GitLab project hook's release event, signed with the hook's
+            // signing token. Its body only names the project and the tag; what
+            // GitLab's API says about that release then decides what is stored.
+            case '/webhook/gitlab': {
+              if (request.method !== 'POST') {
+                return errorResponse('Method Not Allowed', 405);
+              }
+
+              const id = request.headers.get('webhook-id');
+              const timestamp = request.headers.get('webhook-timestamp');
+              const signature = request.headers.get('webhook-signature');
+              if (!id || !timestamp || !signature || !env.GITLAB_WEBHOOK_SECRET) {
+                return errorResponse('Unauthorized', 401);
+              }
+              const body = await request.text();
+              if (!(await verifyGitLabSignature(body, { id, timestamp, signature }, env.GITLAB_WEBHOOK_SECRET))) {
+                return errorResponse('Unauthorized', 401);
+              }
+
+              const payload = parsePayload(body);
+              if (!payload) {
+                return errorResponse('Invalid JSON payload', 400);
+              }
+              // The event comes from the signed body: X-Gitlab-Event isn't signed.
+              const isRelease = payload.object_kind === 'release';
+              metrics.push(
+                Metric.create('webhook_received')
+                  .addTag('event', isRelease ? 'gitlab_release' : 'gitlab_other')
+                  .intField('count', 1),
+              );
+              if (!isRelease) {
+                metrics.push(Metric.create('webhook_ignored').addTag('reason', 'unhandled_event').intField('count', 1));
+                return jsonResponse({ ignored: true });
+              }
+              const { tag } = payload;
+              if (typeof tag !== 'string' || tag === '') {
+                return errorResponse('Invalid release payload', 400);
+              }
+
+              // The project by its instance and id, both from the signed body (an
+              // id is only unique on its instance).
+              const { id: projectId, web_url: webUrl } = (
+                typeof payload.project === 'object' && payload.project !== null ? payload.project : {}
+              ) as { id?: unknown; web_url?: unknown };
+              const host = typeof webUrl === 'string' && URL.canParse(webUrl) ? new URL(webUrl).hostname : undefined;
+              const sourceProjects = host ? projectsForGitLabProject(host, projectId, registry) : [];
+              if (sourceProjects.length === 0) {
+                metrics.push(Metric.create('webhook_ignored').addTag('reason', 'unknown_project').intField('count', 1));
+                return jsonResponse({ ignored: true });
+              }
+              const targets = sourceProjects.filter((project) => normalize(project, tag));
+              const [{ source }] = sourceProjects;
+              if (targets.length === 0 || source.type !== 'gitlab-releases') {
+                metrics.push(Metric.create('webhook_ignored').addTag('reason', 'unmatched_tag').intField('count', 1));
+                return jsonResponse({ ignored: true });
+              }
+
+              // GitLab gives up on a hook after 10s and never retries it, so the
+              // worker answers first and asks GitLab after. Its metrics go out
+              // in a flush of their own: the request's has already run.
+              const reader = new GitLabReleasesSource(
+                source,
+                new GitLabTokens(env.GITLAB_TOKENS).forProject(source),
+                requestTimeoutMs,
+              );
+              const record = (tags: Record<string, string>) => {
+                for (const project of targets) {
+                  projectMetrics(metrics, project.id).push(
+                    Metric.create('webhook_reconcile').addTags(tags).intField('count', 1),
+                  );
+                }
+              };
+              const reconcile = async () => {
+                try {
+                  const result = await withDeadline(GITLAB_RECONCILE_MS, (signal) =>
+                    versionService.reconcileRelease(targets, tag, (name) => reader.fetchRelease(name, signal), signal),
+                  );
+                  record({ result });
+                } catch (error) {
+                  const failure = errorClass(error);
+                  console.error(`[webhook] ${tag}: reconcile failed (${failure}):`, error);
+                  record({ result: 'failed', error_class: failure });
+                } finally {
+                  await influxProvider.flush();
+                }
+              };
+              ctx.waitUntil(reconcile());
               return jsonResponse({ success: true });
             }
 

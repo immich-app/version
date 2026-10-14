@@ -20,6 +20,8 @@ declare namespace Cloudflare {
     GITHUB_WEBHOOK_SECRET?: string;
     // JSON: "host/projectId" -> that GitLab project's read token.
     GITLAB_TOKENS?: string;
+    // whsec_ and a base64 key: the signing token of every GitLab project hook.
+    GITLAB_WEBHOOK_SECRET?: string;
   }
 }
 interface Env extends Cloudflare.Env {}
@@ -27,7 +29,9 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
   [Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-  interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, 'ENVIRONMENT' | 'GITHUB_WEBHOOK_SECRET'>> {}
+  interface ProcessEnv extends StringifyValues<
+    Pick<Cloudflare.Env, 'ENVIRONMENT' | 'GITHUB_WEBHOOK_SECRET' | 'GITLAB_WEBHOOK_SECRET'>
+  > {}
 }
 
 // Begin runtime types

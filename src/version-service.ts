@@ -1,12 +1,11 @@
 import type { DeferredRepository } from './deferred.js';
-import { toProjectRelease } from './github-source.js';
 import { MemoryCache } from './memory-cache.js';
 import { Metric, projectMetrics, type IMetricsRepository } from './metrics.js';
 import { normalize, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
 import { latestPerChannel, retractedReleases, skippedTags } from './releases.js';
 import { MAX_RETRACTION_CHECKS, type FetchedReleases, type ReleaseSource } from './sources.js';
-import type { GitHubRelease, LatestRelease, ProjectRelease } from './types.js';
+import type { LatestRelease, ProjectRelease } from './types.js';
 
 const VERSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -124,20 +123,55 @@ export class VersionService {
   }
 
   /**
-   * Stores a release the webhook reported, if its tag is one of the project's.
+   * Stores a release a webhook reported, if its tag is one of the project's.
    * It never marks the project as fully synced: one release says nothing about
    * the ones before it.
    */
-  async handleReleasePublished(project: Project, release: GitHubRelease): Promise<void> {
+  async handleReleasePublished(project: Project, release: ProjectRelease): Promise<void> {
     const metrics = projectMetrics(this.metrics, project.id);
     await metrics.monitorAsyncFunction({ name: 'webhook_upsert' }, async () => {
-      if (normalize(project, release.tag_name)) {
-        await this.releaseRepository.upsertMany(project.id, [toProjectRelease(release)]);
+      if (normalize(project, release.tag)) {
+        await this.releaseRepository.upsertMany(project.id, [release]);
       }
     })();
-    metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag_name).intField('count', 1));
+    metrics.push(Metric.create('webhook_release_upserted').addTag('tag', release.tag).intField('count', 1));
     versionCaches.invalidate(project.id);
     await this.emitReleaseStats(project);
+  }
+
+  /**
+   * Brings one release in line with its source after a webhook named its tag.
+   * The source's answer decides, never the delivery, so a forged, replayed or
+   * late one can't store or delete anything the source doesn't say: a release
+   * that is out is stored under every project given, and one the source no
+   * longer has, or that is upcoming again, is deleted from them. A row written
+   * after the source was asked is kept, as syncProject() keeps one. Past its
+   * deadline (`signal`) it starts no further write; one already running may
+   * still land.
+   */
+  async reconcileRelease(
+    projects: readonly Project[],
+    tag: string,
+    fetchRelease: (tag: string) => Promise<ProjectRelease | null>,
+    signal?: AbortSignal,
+  ): Promise<'upserted' | 'deleted'> {
+    const writtenBefore = await this.releaseRepository.now();
+    const release = await fetchRelease(tag);
+    for (const project of projects) {
+      signal?.throwIfAborted();
+      if (release) {
+        await this.handleReleasePublished(project, release);
+        continue;
+      }
+      const metrics = projectMetrics(this.metrics, project.id);
+      const deleted = await metrics.monitorAsyncFunction({ name: 'webhook_delete' }, () =>
+        this.releaseRepository.deleteMany(project.id, [{ tag, source_id: tag }], writtenBefore),
+      )();
+      metrics.push(Metric.create('webhook_release_deleted').addTag('tag', tag).intField('count', deleted));
+      versionCaches.invalidate(project.id);
+      await this.emitReleaseStats(project);
+    }
+    return release ? 'upserted' : 'deleted';
   }
 
   /**

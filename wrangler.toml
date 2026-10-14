@@ -15,3 +15,4 @@ crons = ["*/30 * * * *", "0 3 * * *"]
 [vars]
 ENVIRONMENT = ""
 GITHUB_WEBHOOK_SECRET = "test-secret"
+GITLAB_WEBHOOK_SECRET = "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="

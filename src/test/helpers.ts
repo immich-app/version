@@ -23,6 +23,16 @@ export async function insertRelease(release: SeedRelease, project = 'immich') {
     .run();
 }
 
+// A row as GitLab's source writes it: no id of its own, so its tag is its source id.
+export async function insertGitLabRelease(tag: string, project = 'futo-notes') {
+  await env.VERSION_DB.prepare(
+    `INSERT OR REPLACE INTO project_releases (project, tag, published_at, source_id, forge_prerelease, synced_at)
+     VALUES (?1, ?2, '2026-10-01T00:00:00.000Z', ?2, NULL, '2025-01-01T00:00:00Z')`,
+  )
+    .bind(project, tag)
+    .run();
+}
+
 export async function clearReleases() {
   await env.VERSION_DB.exec('DELETE FROM project_releases');
   await env.VERSION_DB.exec('DELETE FROM project_sync_state');
@@ -106,11 +116,74 @@ export const IMMICH_REPOSITORY = { id: 455_229_168, full_name: 'immich-app/immic
 type FetchHandler = { fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> };
 
 // Calls a worker's fetch handler directly, as Cloudflare would, and waits for what it deferred.
-export async function fetchFrom(handler: FetchHandler, url: string, init?: RequestInit) {
+export async function fetchFrom(handler: FetchHandler, url: string, init?: RequestInit, bindings: Env = env) {
   const ctx = createExecutionContext();
-  const response = await handler.fetch(new Request(url, init), env, ctx);
+  const response = await handler.fetch(new Request(url, init), bindings, ctx);
   await waitOnExecutionContext(ctx);
   return response;
+}
+
+// wrangler.toml's GITLAB_WEBHOOK_SECRET: a signing token for the key 0..31.
+export const GITLAB_WEBHOOK_SECRET = 'whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
+
+// The `v1,` signature GitLab's signing token gives a delivery (Standard Webhooks).
+export async function createGitLabSignature(
+  body: string,
+  id: string,
+  timestamp: string,
+  secret = GITLAB_WEBHOOK_SECRET,
+) {
+  const keyBytes = Uint8Array.from(atob(secret.slice('whsec_'.length)), (char) => char.codePointAt(0)!);
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${timestamp}.${body}`));
+  return `v1,${btoa(String.fromCodePoint(...new Uint8Array(mac)))}`;
+}
+
+// FUTO Notes' GitLab project, as a release hook names it.
+export const FUTO_NOTES_GITLAB_PROJECT = {
+  id: 488,
+  web_url: 'https://gitlab.futo.org/futo-notes/futo-notes',
+  path_with_namespace: 'futo-notes/futo-notes',
+};
+
+/**
+ * Posts a signed GitLab delivery to `handler`, as a project hook would, and
+ * waits for what the worker does after answering. The body is a release event
+ * for `tag` unless `body` says otherwise; `headers` replace the signed ones.
+ */
+export async function deliverGitLab(
+  handler: FetchHandler,
+  {
+    tag = 'v1.9.0',
+    action = 'create',
+    project = FUTO_NOTES_GITLAB_PROJECT as unknown,
+    body = undefined as string | undefined,
+    headers = {} as Record<string, string>,
+    bindings = env,
+    // Unix seconds: what the delivery is stamped and signed with.
+    timestamp = String(Math.floor(Date.now() / 1000)),
+  } = {},
+) {
+  const payload =
+    body ?? JSON.stringify({ object_kind: 'release', action, tag, released_at: '2026-10-09T19:08:56.813Z', project });
+  const id = 'msg_0123456789';
+  return await fetchFrom(
+    handler,
+    'https://example.com/webhook/gitlab',
+    {
+      ...EDGE,
+      method: 'POST',
+      body: payload,
+      headers: {
+        'X-Gitlab-Event': 'Release Hook',
+        'webhook-id': id,
+        'webhook-timestamp': timestamp,
+        'webhook-signature': await createGitLabSignature(payload, id, timestamp),
+        ...headers,
+      },
+    },
+    bindings,
+  );
 }
 
 /**

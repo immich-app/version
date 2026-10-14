@@ -72,34 +72,39 @@ export class GitLabReleasesSource implements ReleaseSource {
 
   /**
    * Asks GitLab for each candidate's release by its tag, which is its source
-   * id. It is gone if GitLab no longer has it (404), or if it is upcoming
-   * again: fetchAll() skips a release that isn't out, so it would never have
-   * been stored. A release that is out stays.
+   * id. It is gone if fetchRelease() finds none. A release that is out stays.
    */
   async confirmRetracted(candidates: readonly ProjectRelease[], options?: ConfirmOptions): Promise<ProjectRelease[]> {
     return confirmGone(
       this.project,
       candidates,
-      async ({ tag }, signal) => {
-        const url = `${this.releasesUrl}/${encodeURIComponent(tag)}`;
-        const response = await this.get(url, signal);
-        if (response.status === 404) {
-          await response.body?.cancel();
-          return true;
-        }
-        if (!response.ok) {
-          await response.body?.cancel();
-          handleErrorResponse(response);
-        }
-
-        const release = (await response.json()) as { tag_name?: unknown; upcoming_release?: unknown } | null;
-        if (release?.tag_name !== tag) {
-          throw new TypeError(`GitLab API error: ${url} is not the release of ${tag}`);
-        }
-        return release.upcoming_release === true;
-      },
+      async ({ tag }, signal) => (await this.fetchRelease(tag, signal)) === null,
       options,
     );
+  }
+
+  /**
+   * The release with this tag, as fetchAll() would list it, or null if GitLab
+   * no longer has it (404) or it is upcoming: fetchAll() skips a release that
+   * isn't out, so it would never have been stored.
+   */
+  async fetchRelease(tag: string, signal?: AbortSignal): Promise<ProjectRelease | null> {
+    const url = `${this.releasesUrl}/${encodeURIComponent(tag)}`;
+    const response = await this.get(url, signal);
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return null;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      handleErrorResponse(response);
+    }
+
+    const release = (await response.json()) as { tag_name?: unknown } | null;
+    if (release?.tag_name !== tag) {
+      throw new TypeError(`GitLab API error: ${url} is not the release of ${tag}`);
+    }
+    return parseRelease(release);
   }
 
   /**

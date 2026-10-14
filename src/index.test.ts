@@ -5,11 +5,14 @@ import { MemoryCache } from './memory-cache.js';
 import { legacyProject, loadProjects, projects } from './projects.js';
 import {
   clearReleases,
+  createGitLabSignature,
   createWebhookSignature,
+  deliverGitLab,
   EDGE,
   fetchFrom,
   fullSyncedAt,
   IMMICH_REPOSITORY,
+  insertGitLabRelease,
   insertRelease,
   loggedLines,
   publishRelease,
@@ -20,7 +23,7 @@ import {
 } from './test/helpers.js';
 import type { DocsVersion, VersionResponse } from './types.js';
 import { versionCaches } from './version-service.js';
-import { verifyWebhookSignature } from './webhook.js';
+import { verifyGitLabSignature, verifyWebhookSignature } from './webhook.js';
 
 const mockReleases = [
   { id: 3, tag_name: 'v1.120.0', published_at: '2025-03-01T00:00:00Z' },
@@ -627,6 +630,229 @@ describe('Version Worker', () => {
 
       expect(await storedReleases('mobile')).toEqual([expect.objectContaining({ tag: 'mobile-v2.0.0' })]);
       expect(await storedReleases('desktop')).toEqual([]);
+    });
+  });
+
+  describe('POST /webhook/gitlab', () => {
+    // projects.json's registry, which reads FUTO Notes from gitlab.futo.org project 488.
+    const handler = createWorker({ projects });
+    const RELEASE_URL = 'https://gitlab.futo.org/api/v4/projects/488/releases/';
+    // How GitLab's API answers for one release, by its tag. Anything else is a 404.
+    let gitlab: Record<string, () => Response>;
+    let requests: Request[];
+
+    const released =
+      (tag: string, fields: Record<string, unknown> = {}) =>
+      () =>
+        Response.json({ tag_name: tag, released_at: '2026-10-09T19:08:56.813Z', upcoming_release: false, ...fields });
+
+    beforeEach(() => {
+      gitlab = {};
+      requests = [];
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (!request.url.startsWith(RELEASE_URL)) {
+          return Promise.reject(new Error(`unexpected fetch: ${request.url}`));
+        }
+        const answer = gitlab[decodeURIComponent(request.url.slice(RELEASE_URL.length))];
+        return Promise.resolve(answer ? answer() : Response.json({ message: '404 Not Found' }, { status: 404 }));
+      });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('stores a created release as GitLab lists it, so the next cron writes nothing', async () => {
+      gitlab['v1.9.0'] = released('v1.9.0');
+
+      const response = await deliverGitLab(handler, { tag: 'v1.9.0' });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ success: true });
+      expect(await storedReleases('futo-notes')).toEqual([
+        expect.objectContaining({
+          tag: 'v1.9.0',
+          published_at: '2026-10-09T19:08:56.813Z',
+          source_id: 'v1.9.0',
+          forge_prerelease: null,
+        }),
+      ]);
+      expect(await fullSyncedAt('futo-notes')).toBeNull();
+    });
+
+    it("asks GitLab with the project's read token", async () => {
+      gitlab['v1.9.0'] = released('v1.9.0');
+      const bindings = { ...env, GITLAB_TOKENS: JSON.stringify({ 'gitlab.futo.org/488': 'glpat-notes' }) };
+
+      await deliverGitLab(handler, { bindings });
+
+      expect(requests.map(({ url }) => url)).toEqual([`${RELEASE_URL}v1.9.0`]);
+      expect(requests[0].headers.get('PRIVATE-TOKEN')).toBe('glpat-notes');
+    });
+
+    it('stores nothing for a release that is still upcoming', async () => {
+      gitlab['v1.9.0'] = released('v1.9.0', { released_at: '2099-01-01T00:00:00.000Z', upcoming_release: true });
+
+      await deliverGitLab(handler);
+
+      expect(await storedTags('futo-notes')).toEqual([]);
+    });
+
+    it('deletes a release once GitLab confirms it is gone', async () => {
+      await insertGitLabRelease('v1.8.1');
+      await insertGitLabRelease('v1.8.0');
+
+      await deliverGitLab(handler, { tag: 'v1.8.1', action: 'delete' });
+
+      expect(requests.map(({ url }) => url)).toEqual([`${RELEASE_URL}v1.8.1`]);
+      expect(await storedTags('futo-notes')).toEqual(['v1.8.0']);
+    });
+
+    it('keeps a release GitLab still has, whatever the delivery says', async () => {
+      await insertGitLabRelease('v1.8.1');
+      gitlab['v1.8.1'] = released('v1.8.1');
+
+      await deliverGitLab(handler, { tag: 'v1.8.1', action: 'delete' });
+
+      expect(await storedTags('futo-notes')).toEqual(['v1.8.1']);
+    });
+
+    it('changes nothing when GitLab fails, and counts the failure', async () => {
+      await insertGitLabRelease('v1.8.1');
+      gitlab['v1.8.1'] = () => new Response(null, { status: 500 });
+
+      const series = seriesTags(await loggedLines(() => deliverGitLab(handler, { tag: 'v1.8.1', action: 'delete' })));
+
+      expect(await storedTags('futo-notes')).toEqual(['v1.8.1']);
+      expect(series.version_webhook_reconcile).toEqual([
+        { version_project: 'futo-notes', colo: 'LHR', result: 'failed', error_class: 'http' },
+      ]);
+    });
+
+    it('counts the delivery, its route and what reconciling it did', async () => {
+      gitlab['v1.9.0'] = released('v1.9.0');
+
+      const series = seriesTags(await loggedLines(() => deliverGitLab(handler)));
+
+      expect(series.version_webhook_received).toEqual([{ colo: 'LHR', event: 'gitlab_release' }]);
+      expect(series.version_http_response).toEqual([
+        { method: 'POST', path: '/webhook/gitlab', status: '200', colo: 'LHR' },
+      ]);
+      expect(series.version_webhook_reconcile).toEqual([
+        { version_project: 'futo-notes', colo: 'LHR', result: 'upserted' },
+      ]);
+    });
+
+    it.each([
+      ['no signature', { 'webhook-signature': '' }],
+      ['a signature with another key', { 'webhook-signature': 'v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }],
+      ['a signature for another delivery id', { 'webhook-id': 'msg_other' }],
+      [
+        'only the plain X-Gitlab-Token',
+        { 'webhook-signature': '', 'X-Gitlab-Token': 'whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' },
+      ],
+    ])('rejects a delivery with %s, before asking GitLab', async (_, headers) => {
+      const response = await deliverGitLab(handler, { headers });
+
+      expect(response.status).toBe(401);
+      expect(requests).toEqual([]);
+    });
+
+    it.each([
+      ['more than 5 minutes old', -301],
+      ['more than 5 minutes ahead', 301],
+    ])('rejects a delivery signed for a timestamp %s, before asking GitLab', async (_, offset) => {
+      const response = await deliverGitLab(handler, { timestamp: String(Math.floor(Date.now() / 1000) + offset) });
+
+      expect(response.status).toBe(401);
+      expect(requests).toEqual([]);
+    });
+
+    it('accepts a delivery signed for a timestamp within 5 minutes', async () => {
+      gitlab['v1.9.0'] = released('v1.9.0');
+
+      const response = await deliverGitLab(handler, { timestamp: String(Math.floor(Date.now() / 1000) - 240) });
+
+      expect(response.status).toBe(200);
+      expect(await storedTags('futo-notes')).toEqual(['v1.9.0']);
+    });
+
+    it('rejects every delivery when no secret is bound', async () => {
+      const { GITLAB_WEBHOOK_SECRET: _, ...bindings } = env;
+
+      const response = await deliverGitLab(handler, { bindings: bindings as Env });
+
+      expect(response.status).toBe(401);
+    });
+
+    it('accepts a delivery when any of its signatures matches', async () => {
+      const body = JSON.stringify({ object_kind: 'push' });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = await createGitLabSignature(body, 'msg_1', timestamp);
+
+      expect(
+        await verifyGitLabSignature(
+          body,
+          { id: 'msg_1', timestamp, signature: `v1,bm90IGl0 ${signature}` },
+          env.GITLAB_WEBHOOK_SECRET!,
+        ),
+      ).toBe(true);
+    });
+
+    it('returns 405 for anything but a POST', async () => {
+      const response = await fetchFrom(handler, 'https://example.com/webhook/gitlab');
+
+      expect(response.status).toBe(405);
+    });
+
+    it('returns 400 for a signed body that is not JSON', async () => {
+      const response = await deliverGitLab(handler, { body: 'not json' });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('returns 400 for a release event without a tag', async () => {
+      const body = JSON.stringify({
+        object_kind: 'release',
+        project: { id: 488, web_url: 'https://gitlab.futo.org/x/y' },
+      });
+
+      const response = await deliverGitLab(handler, { body });
+
+      expect(response.status).toBe(400);
+      expect(requests).toEqual([]);
+    });
+
+    it.each([
+      ['another event', { body: JSON.stringify({ object_kind: 'push', project: { id: 488 } }) }, 'unhandled_event'],
+      [
+        'a project no source reads',
+        { project: { id: 9, web_url: 'https://gitlab.futo.org/futo-org/other' } },
+        'unknown_project',
+      ],
+      [
+        'project 488 on another host',
+        { project: { id: 488, web_url: 'https://gitlab.com/futo-notes/futo-notes' } },
+        'unknown_project',
+      ],
+      [
+        'a project without an id',
+        { project: { web_url: 'https://gitlab.futo.org/futo-notes/futo-notes' } },
+        'unknown_project',
+      ],
+      ["a tag FUTO Notes' pattern rejects", { tag: 'v1.7.2-milkdown.3' }, 'unmatched_tag'],
+    ])('ignores %s without asking GitLab', async (_, delivery, reason) => {
+      const logged = await loggedLines(async () => {
+        const response = await deliverGitLab(handler, delivery);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ ignored: true });
+      });
+
+      expect(requests).toEqual([]);
+      expect(seriesTags(logged).version_webhook_ignored).toEqual([{ colo: 'LHR', reason }]);
     });
   });
 
