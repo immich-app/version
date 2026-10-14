@@ -76,6 +76,18 @@ resource "cloudflare_worker_version" "worker" {
       type = "secret_text"
       text = var.github_app_version_webhook_secret
     },
+    # This env's GitLab project hooks and read tokens (gitlab.tf). PR stages
+    # get neither: they read GitLab anonymously, so public projects only.
+    {
+      name = "GITLAB_WEBHOOK_SECRET"
+      type = "secret_text"
+      text = local.gitlab_signing_token
+    },
+    {
+      name = "GITLAB_TOKENS"
+      type = "secret_text"
+      text = jsonencode({ for key, token in gitlab_project_access_token.read : key => token.token })
+    },
     ] : [], [
     for name, value in local.metrics_identity : {
       name = name

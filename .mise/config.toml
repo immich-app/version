@@ -5,6 +5,7 @@ terragrunt = "1.1.6"
 [env]
 TF_VAR_dist_dir="{{config_root}}/dist"
 TF_VAR_migrations_dir="{{config_root}}/migrations"
+TF_VAR_projects_file="{{config_root}}/projects.json"
 # op vault references in deployment/.env only resolve in the immich account;
 # without this, op defaults to whichever signed-in account was used last
 OP_ACCOUNT="immich.1password.com"

@@ -7,9 +7,9 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "< 5.28.0"
     }
-    github = {
-      source  = "integrations/github"
-      version = "~> 6.0"
+    gitlab = {
+      source  = "gitlabhq/gitlab"
+      version = "~> 19.4"
     }
     null = {
       source  = "hashicorp/null"
@@ -17,7 +17,7 @@ terraform {
     }
     random = {
       source  = "hashicorp/random"
-      version = ">= 3"
+      version = ">= 3.6"
     }
   }
 }
