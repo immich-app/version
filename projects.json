@@ -27,7 +27,12 @@
     {
       "id": "futo-notes",
       "name": "FUTO Notes",
-      "source": { "type": "gitlab-releases", "host": "gitlab.futo.org", "path": "futo-notes/futo-notes" },
+      "source": {
+        "type": "gitlab-releases",
+        "host": "gitlab.futo.org",
+        "path": "futo-notes/futo-notes",
+        "projectId": 488
+      },
       "tags": { "pattern": "^v(?<version>\\d+\\.\\d+\\.\\d+)$", "scheme": "semver" },
       "channels": { "stable": [] },
       "defaultChannel": "stable",

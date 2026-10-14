@@ -104,7 +104,7 @@
     "gitlabReleasesSource": {
       "description": "A public GitLab project's releases, read without a token and synced by the crons alone, with no webhook.",
       "type": "object",
-      "required": ["type", "host", "path"],
+      "required": ["type", "host", "path", "projectId"],
       "additionalProperties": false,
       "properties": {
         "type": { "const": "gitlab-releases" },
@@ -114,9 +114,14 @@
           "pattern": "^[a-z\\d-]+(?:\\.[a-z\\d-]+)+$"
         },
         "path": {
-          "description": "The project's full path: group/name, with any subgroups between.",
+          "description": "The project's full path: group/name, with any subgroups between. For logs and docs: the project is read and routed by its id.",
           "type": "string",
           "pattern": "^[\\w.-]+(?:/[\\w.-]+)+$"
+        },
+        "projectId": {
+          "description": "GitLab's project id, from the project's page or the API (curl https://<host>/api/v4/projects/<url-encoded path> | jq .id). It survives renames and transfers.",
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

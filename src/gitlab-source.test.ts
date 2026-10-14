@@ -7,9 +7,10 @@ import { gitlabReleasesPage } from './test/helpers.js';
 // futoNotes is GitLab's listing of futo-notes/futo-notes on 2026-10-06, newest
 // released first, with each release's author, commit, assets, evidences and
 // links trimmed off.
-const RELEASES = 'https://gitlab.futo.org/api/v4/projects/futo-notes%2Ffuto-notes/releases';
+const RELEASES = 'https://gitlab.futo.org/api/v4/projects/488/releases';
 
-const source = (timeoutMs?: number) => new GitLabReleasesSource('gitlab.futo.org', 'futo-notes/futo-notes', timeoutMs);
+const NOTES = { host: 'gitlab.futo.org', path: 'futo-notes/futo-notes', projectId: 488 };
+const source = (timeoutMs?: number) => new GitLabReleasesSource(NOTES, timeoutMs);
 
 // A listing of `count` releases, newest first.
 const listing = (count: number) =>
@@ -152,23 +153,25 @@ describe('GitLabReleasesSource', () => {
     await expect(source().fetchRecent()).rejects.toThrow(/did not list releases/);
   });
 
-  it('encodes a path with subgroups as one segment', async () => {
+  it('reads the project by its id, whatever its path', async () => {
     const requests: string[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       requests.push(new Request(input, init).url);
       return Promise.resolve(Response.json([]));
     });
 
-    await new GitLabReleasesSource('gitlab.example.org', 'group/sub.group/name').fetchRecent();
+    await new GitLabReleasesSource({
+      host: 'gitlab.example.org',
+      path: 'group/sub.group/name',
+      projectId: 7,
+    }).fetchRecent();
 
-    expect(requests).toEqual([
-      'https://gitlab.example.org/api/v4/projects/group%2Fsub.group%2Fname/releases?per_page=20',
-    ]);
+    expect(requests).toEqual(['https://gitlab.example.org/api/v4/projects/7/releases?per_page=20']);
   });
 
   it('shares a rate limit with every project on its host, and with no other', () => {
-    const other = new GitLabReleasesSource('gitlab.futo.org', 'futo-org/other');
-    const elsewhere = new GitLabReleasesSource('gitlab.example.org', 'futo-notes/futo-notes');
+    const other = new GitLabReleasesSource({ host: 'gitlab.futo.org', path: 'futo-org/other', projectId: 9 });
+    const elsewhere = new GitLabReleasesSource({ ...NOTES, host: 'gitlab.example.org' });
 
     expect(source().rateLimitKey).toBe('gitlab-anonymous:gitlab.futo.org');
     expect(other.rateLimitKey).toBe(source().rateLimitKey);

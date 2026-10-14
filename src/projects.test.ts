@@ -10,6 +10,7 @@ import {
   PROJECT_ID_PATTERN,
   projects,
   projectsForGitHubRepository,
+  projectsForGitLabProject,
   requireProject,
   sameSource,
   SOURCE_TYPES,
@@ -33,7 +34,12 @@ const entry = () => ({
 
 const load = (...entries: unknown[]) => loadProjects({ projects: entries });
 
-const gitlab = (path = 'futo-notes/futo-notes', host = 'gitlab.futo.org') => ({ type: 'gitlab-releases', host, path });
+const gitlab = (path = 'futo-notes/futo-notes', host = 'gitlab.futo.org', projectId: unknown = 488) => ({
+  type: 'gitlab-releases',
+  host,
+  path,
+  projectId,
+});
 
 // Example tags that more than one project on the same source would take.
 function overlappingClaims(list: readonly Project[]): string[] {
@@ -135,6 +141,7 @@ describe('loadProjects', () => {
       type: 'gitlab-releases',
       host: 'gitlab.futo.org',
       path: 'futo-notes/sub.group/futo-notes',
+      projectId: 488,
     });
   });
 
@@ -222,8 +229,23 @@ describe('loadProjects', () => {
     ],
     [
       'a GitLab source without a path',
-      (p) => ({ ...p, source: { type: 'gitlab-releases', host: 'gitlab.futo.org' } }),
+      (p) => ({ ...p, source: { type: 'gitlab-releases', host: 'gitlab.futo.org', projectId: 488 } }),
       'projects[0].source: is missing "path"',
+    ],
+    [
+      'a GitLab source without a project id',
+      (p) => ({ ...p, source: { type: 'gitlab-releases', host: 'gitlab.futo.org', path: 'futo-notes/futo-notes' } }),
+      'projects[0].source: is missing "projectId"',
+    ],
+    [
+      'a GitLab project id given as a string',
+      (p) => ({ ...p, source: gitlab(undefined, undefined, '488') }),
+      'projects[0].source.projectId: must be a positive integer',
+    ],
+    [
+      'a GitLab project id of 0',
+      (p) => ({ ...p, source: gitlab(undefined, undefined, 0) }),
+      'projects[0].source.projectId: must be a positive integer',
     ],
     [
       "a GitLab source with a GitHub source's key",
@@ -398,16 +420,16 @@ describe('finding projects', () => {
     expect(sameSource(other, list)).toEqual([other]);
   });
 
-  it('groups the projects that read the same GitLab project, by its host and its path in any case', () => {
+  it('groups the projects that read the same GitLab project, by its host and its id', () => {
     const [notes, renamed, elsewhere, github] = load(
       { ...entry(), id: 'notes', source: gitlab('futo-notes/futo-notes') },
-      { ...entry(), id: 'renamed', source: gitlab('FUTO-Notes/Futo-Notes') },
+      { ...entry(), id: 'renamed', source: gitlab('futo-org/notes') },
       { ...entry(), id: 'elsewhere', source: gitlab('futo-notes/futo-notes', 'gitlab.example.org') },
       { ...entry(), id: 'github', source: { type: 'github-releases', repo: 'futo-notes/futo-notes', repoId: 488 } },
     );
     const gitlabList = [notes, renamed, elsewhere, github];
 
-    expect(sourceKey(notes.source)).toBe('gitlab-releases:gitlab.futo.org/futo-notes/futo-notes');
+    expect(sourceKey(notes.source)).toBe('gitlab-releases:gitlab.futo.org:488');
     expect(sameSource(notes, gitlabList)).toEqual([notes, renamed]);
     expect(sameSource(elsewhere, gitlabList)).toEqual([elsewhere]);
     expect(sameSource(github, gitlabList)).toEqual([github]);
@@ -435,6 +457,37 @@ describe('finding projects', () => {
   it('never finds a GitLab project for a GitHub delivery', () => {
     const [notes] = load({ ...entry(), id: 'notes', source: gitlab('futo-org/example') });
     expect(projectsForGitHubRepository({ id: 488, full_name: 'futo-org/example' }, [notes])).toEqual([]);
+  });
+
+  describe('projectsForGitLabProject', () => {
+    const [notes, desktop, moved, elsewhere, github] = load(
+      { ...entry(), id: 'notes', source: gitlab('futo-notes/futo-notes') },
+      { ...entry(), id: 'desktop', source: gitlab('futo-notes/futo-notes') },
+      { ...entry(), id: 'moved', source: gitlab('futo-org/moved', undefined, 9) },
+      { ...entry(), id: 'elsewhere', source: gitlab('futo-notes/futo-notes', 'gitlab.example.org') },
+      { ...entry(), id: 'github', source: { type: 'github-releases', repo: 'futo-org/github', repoId: 488 } },
+    );
+    const gitlabList = [notes, desktop, moved, elsewhere, github];
+
+    it.each([
+      ['its host and id, with every project on it', 'gitlab.futo.org', 488, ['notes', 'desktop']],
+      ['its id, whatever its path now', 'gitlab.futo.org', 9, ['moved']],
+      ['only the project with that id on that host', 'gitlab.example.org', 488, ['elsewhere']],
+      ['nothing, on a host no project reads', 'gitlab.com', 488, []],
+      ['nothing, for an unknown id', 'gitlab.futo.org', 99, []],
+      ['nothing, for an id given as a string', 'gitlab.futo.org', '488', []],
+      ['nothing, without an id', 'gitlab.futo.org', undefined, []],
+    ])("finds a webhook's projects by %s", (_, host, projectId, ids) => {
+      expect(projectsForGitLabProject(host, projectId, gitlabList).map(({ id }) => id)).toEqual(ids);
+    });
+
+    it('never finds a GitHub repository with the same id', () => {
+      expect(projectsForGitLabProject('gitlab.futo.org', 488, [github])).toEqual([]);
+    });
+
+    it('finds FUTO Notes', () => {
+      expect(projectsForGitLabProject('gitlab.futo.org', 488).map(({ id }) => id)).toEqual(['futo-notes']);
+    });
   });
 
   it("finds Immich's own repository", () => {
