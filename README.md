@@ -8,11 +8,12 @@ Cloudflare Worker that serves the latest release of each FUTO project it tracks,
 | `GET /version`                  | Immich's latest release for a channel (`?channel=stable` (default) or `?channel=rc`) |
 | `GET /v1/docs/versions`         | Immich docs versions with links to their `*.archive.immich.app` sites                |
 | `POST /webhook`                 | GitHub `release` webhook, routed by repository (HMAC-SHA256 verified)                |
+| `POST /webhook/gitlab`          | GitLab release hook, routed by project (signing token verified)                      |
 | `GET /health`                   | Health check                                                                         |
 
 `/v1/projects/{id}/version` answers `{"project","channel","version","tag","published_at"}`, where `version` is the version in the tag (`3.3.0`) and `tag` the tag itself (`v3.3.0`). An unregistered id is a 404 `{"error":"Unknown project"}`, a channel the project lacks a 400 `{"error":"Invalid release channel","channels":[…]}`, and an empty channel a 404 `{"error":"No releases found"}`. It takes GET and HEAD. A 200 may be cached for 5 minutes, and errors are sent with `Cache-Control: no-store`.
 
-Releases are stored in D1 per project (see [Projects](#projects)) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. A project's releases come from its GitHub repository or its GitLab project, read with the project's own read token (`GITLAB_TOKENS`), so a private project works too. Immich's release webhook stores its releases as they are published; GitLab projects have no webhook.
+Releases are stored in D1 per project (see [Projects](#projects)) and kept in sync by two crons that sync every project: an incremental sync every 30 minutes and a full sync at 03:00 UTC. A project's releases come from its GitHub repository or its GitLab project, read with the project's own read token (`GITLAB_TOKENS`), so a private project works too. Webhooks store new releases as they are published: the GitHub App's for GitHub projects, and each GitLab project's own hook for GitLab ones.
 
 ## Projects
 

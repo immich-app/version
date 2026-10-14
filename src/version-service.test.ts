@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeferredRepository } from './deferred.js';
+import { toProjectRelease } from './github-source.js';
 import { CloudflareMetricsRepository, type Metric } from './metrics.js';
 import { legacyProject, loadProjects, type Project } from './projects.js';
 import type { IReleaseRepository } from './release-repository.js';
@@ -87,6 +88,14 @@ const storedRelease = stored('v1.130.0', '2025-04-01T00:00:00Z', '4');
 
 // An in-memory IReleaseRepository, one list of rows per project. Unless the
 // test says otherwise, Immich has v1.130.0 and has had a full sync.
+// FUTO Notes' kind of release: GitLab gives it no id of its own, so its tag is its source id.
+const gitlabRelease = (tag: string): ProjectRelease => ({
+  tag,
+  published_at: '2026-10-09T19:08:56.813Z',
+  source_id: tag,
+  forge_prerelease: null,
+});
+
 function createReleaseRepository(rows?: Record<string, ProjectRelease[]>, fullySynced = rows ? [] : ['immich']) {
   const data = new Map(Object.entries(rows ?? { immich: [storedRelease] }).map(([id, list]) => [id, [...list]]));
   const syncedAt = new Map<string, string>(fullySynced.map((id) => [id, 'earlier']));
@@ -238,12 +247,105 @@ describe('VersionService', () => {
     });
   });
 
+  describe('reconcileRelease', () => {
+    it('stores the release the source has under every project given', async () => {
+      const repository = createReleaseRepository({ other: [] });
+      const service = new VersionService(repository, metrics);
+
+      const result = await service.reconcileRelease([immich, other], 'v1.131.0', (tag) =>
+        Promise.resolve(gitlabRelease(tag)),
+      );
+
+      expect(result).toBe('upserted');
+      expect(repository.upsertMany).toHaveBeenCalledWith('immich', [gitlabRelease('v1.131.0')]);
+      expect(repository.upsertMany).toHaveBeenCalledWith('other', [gitlabRelease('v1.131.0')]);
+      expect(repository.deleteMany).not.toHaveBeenCalled();
+      expect(repository.markFullSynced).not.toHaveBeenCalled();
+    });
+
+    it('deletes a release the source no longer has, only if it was written before the source was asked', async () => {
+      const repository = createReleaseRepository({ immich: [gitlabRelease('v1.130.0'), stored('v1.120.0')] });
+      repository.now.mockResolvedValueOnce('2026-10-14T12:00:00.000Z');
+      const asked: string[] = [];
+      const service = new VersionService(repository, metrics);
+
+      const result = await service.reconcileRelease([immich], 'v1.130.0', (tag) => {
+        asked.push(tag);
+        // The cutoff is taken first, so a write that lands while GitLab answers is newer than it.
+        expect(repository.now).toHaveBeenCalledOnce();
+        return Promise.resolve(null);
+      });
+
+      expect(result).toBe('deleted');
+      expect(asked).toEqual(['v1.130.0']);
+      expect(repository.deleteMany).toHaveBeenCalledWith(
+        'immich',
+        [{ tag: 'v1.130.0', source_id: 'v1.130.0' }],
+        '2026-10-14T12:00:00.000Z',
+      );
+      const remaining = await repository.list('immich');
+      expect(remaining.map(({ tag }) => tag)).toEqual(['v1.120.0']);
+      expect(metrics.countOf('webhook_release_deleted')).toBe(1);
+    });
+
+    it("invalidates the project's cache and writes its release stats either way", async () => {
+      cacheFor(immich).set(new Map());
+      const service = new VersionService(createReleaseRepository(), metrics);
+
+      await service.reconcileRelease([immich], 'v1.130.0', () => Promise.resolve(null));
+
+      expect(cacheFor(immich).get()).toBeNull();
+      expect(metrics.names()).toEqual([
+        'webhook_delete',
+        'webhook_release_deleted',
+        'd1_release_count',
+        'latest_version',
+      ]);
+    });
+
+    it('starts no write for the next project once its deadline has passed', async () => {
+      const repository = createReleaseRepository({ immich: [], other: [] });
+      const deadline = new AbortController();
+      // The first project's write runs past the deadline.
+      repository.upsertMany.mockImplementationOnce(() => {
+        deadline.abort(new DOMException('deadline', 'TimeoutError'));
+        return Promise.resolve();
+      });
+      const service = new VersionService(repository, metrics);
+
+      await expect(
+        service.reconcileRelease(
+          [immich, other],
+          'v1.131.0',
+          (tag) => Promise.resolve(gitlabRelease(tag)),
+          deadline.signal,
+        ),
+      ).rejects.toMatchObject({ name: 'TimeoutError' });
+      expect(repository.upsertMany).toHaveBeenCalledOnce();
+      expect(repository.upsertMany).toHaveBeenCalledWith('immich', [gitlabRelease('v1.131.0')]);
+    });
+
+    it('writes nothing when the source fails', async () => {
+      const repository = createReleaseRepository();
+      const service = new VersionService(repository, metrics);
+
+      await expect(
+        service.reconcileRelease([immich], 'v1.130.0', () => Promise.reject(new Error('GitLab is down'))),
+      ).rejects.toThrow('GitLab is down');
+      expect(repository.upsertMany).not.toHaveBeenCalled();
+      expect(repository.deleteMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handleReleasePublished', () => {
     it("stores the release under the project, with GitHub's id and prerelease flag", async () => {
       const repository = createReleaseRepository();
       const service = new VersionService(repository, metrics);
 
-      await service.handleReleasePublished(immich, { ...release, tag_name: 'v1.131.0-rc.1', prerelease: true });
+      await service.handleReleasePublished(
+        immich,
+        toProjectRelease({ ...release, tag_name: 'v1.131.0-rc.1', prerelease: true }),
+      );
 
       expect(repository.upsertMany).toHaveBeenCalledWith('immich', [
         { tag: 'v1.131.0-rc.1', published_at: '2025-04-01T00:00:00Z', source_id: '4', forge_prerelease: true },
@@ -254,7 +356,7 @@ describe('VersionService', () => {
       const repository = createReleaseRepository();
       const service = new VersionService(repository, metrics);
 
-      await service.handleReleasePublished(immich, { ...release, tag_name: 'v1.131.0-rc1' });
+      await service.handleReleasePublished(immich, toProjectRelease({ ...release, tag_name: 'v1.131.0-rc1' }));
 
       expect(repository.upsertMany).not.toHaveBeenCalled();
     });
@@ -263,7 +365,7 @@ describe('VersionService', () => {
       const repository = createReleaseRepository({ immich: [storedRelease, stored('v1.120.0')] });
       const service = new VersionService(repository, metrics);
 
-      await service.handleReleasePublished(immich, release);
+      await service.handleReleasePublished(immich, toProjectRelease(release));
 
       expect(metrics.names()).toEqual([
         'webhook_upsert',
@@ -278,7 +380,7 @@ describe('VersionService', () => {
     it("writes the release stats to the crons' series, without the request's colo", async () => {
       const service = new VersionService(createReleaseRepository(), metrics);
 
-      await service.handleReleasePublished(immich, release);
+      await service.handleReleasePublished(immich, toProjectRelease(release));
 
       expect(metrics.tagsOf('webhook_upsert')).toEqual({ version_project: 'immich', colo: 'LHR' });
       expect(metrics.tagsOf('webhook_release_upserted')).toEqual({
@@ -299,7 +401,7 @@ describe('VersionService', () => {
       const repository = createReleaseRepository();
       const service = new VersionService(repository, metrics);
 
-      await service.handleReleasePublished(immich, release);
+      await service.handleReleasePublished(immich, toProjectRelease(release));
 
       expect(cacheFor(immich).get()).toBeNull();
       expect(cacheFor(other).get()).not.toBeNull();
