@@ -102,7 +102,7 @@
       }
     },
     "gitlabReleasesSource": {
-      "description": "A public GitLab project's releases, read without a token and synced by the crons alone, with no webhook.",
+      "description": "A GitLab project's releases, read with its read token from GITLAB_TOKENS (anonymously without one, which only works for a public project) and synced by the crons alone, with no webhook.",
       "type": "object",
       "required": ["type", "host", "path", "projectId"],
       "additionalProperties": false,

@@ -1,5 +1,6 @@
 import type { GitHubTokens } from './github-auth.js';
 import { GitHubReleasesSource } from './github-source.js';
+import type { GitLabTokens } from './gitlab-auth.js';
 import { GitLabReleasesSource } from './gitlab-source.js';
 import { Metric, projectMetrics, type IMetricsRepository } from './metrics.js';
 import { sameSource, type Project } from './projects.js';
@@ -16,9 +17,10 @@ export const NIGHTLY_CRON = '0 3 * * *';
 // D1. Its release stats then get as long again.
 export const PROJECT_DEADLINE_MS = 60_000;
 
-// What sources read with. GitLab sources read public projects, without any.
+// What sources read with.
 export interface SourceCredentials {
   github: GitHubTokens;
+  gitlab: GitLabTokens;
 }
 
 // A new source type is a ReleaseSource built here, plus its loader and sourceKey() in src/projects.ts.
@@ -33,7 +35,7 @@ export function createSource(
       return new GitHubReleasesSource(source, credentials.github.forRepository(source.repo), timeoutMs);
     }
     case 'gitlab-releases': {
-      return new GitLabReleasesSource(source, timeoutMs);
+      return new GitLabReleasesSource(source, credentials.gitlab.forProject(source), timeoutMs);
     }
   }
 }

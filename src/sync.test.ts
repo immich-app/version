@@ -691,6 +691,32 @@ describe('scheduled, with FUTO Notes on GitLab', () => {
     expect(await storedTags('immich')).toEqual(['v1.120.0']);
   });
 
+  it('reads a GitLab project with its token from GITLAB_TOKENS, so a private one syncs', async () => {
+    // A private project answers 404 to anyone without its token.
+    answers.gitlab = (url) => gitlabReleasesPage(url.href, futoNotes);
+    const fetchMock = vi.mocked(fetch);
+    const answer = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => {
+      const request = new Request(input, init);
+      return request.url.startsWith(GITLAB) && request.headers.get('PRIVATE-TOKEN') !== 'glpat-notes'
+        ? Promise.resolve(Response.json({ message: '404 Project Not Found' }, { status: 404 }))
+        : answer(input, init);
+    });
+    const bindings = { ...env, GITLAB_TOKENS: JSON.stringify({ 'gitlab.futo.org/488': 'glpat-notes' }) };
+
+    expect(await run({ bindings })).toEqual([]);
+    expect(await storedTags('futo-notes')).toContain('v1.8.0');
+    expect(await run()).toEqual([{ version_project: 'futo-notes', error_class: 'not_found' }]);
+  });
+
+  it('counts a GitLab project as auth, and still syncs the rest, when GITLAB_TOKENS is malformed', async () => {
+    const bindings = { ...env, GITLAB_TOKENS: 'not json' };
+
+    expect(await run({ bindings })).toEqual([{ version_project: 'futo-notes', error_class: 'auth' }]);
+    expect(requests.some(({ url }) => url.startsWith(GITLAB))).toBe(false);
+    expect(await storedTags('immich')).toEqual(['v1.120.0']);
+  });
+
   // GitLab's listing once v1.0.0 is taken down.
   const withoutV100 = futoNotes.filter(({ tag_name }) => tag_name !== 'v1.0.0');
   // Page 1 of that listing names `next` after it. Any other page is the last,

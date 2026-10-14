@@ -31,7 +31,7 @@ export interface GitHubReleasesSource {
   repoId: number;
 }
 
-// A public GitLab project's releases, read without a token.
+// A GitLab project's releases, read with its read token (src/gitlab-auth.ts).
 export interface GitLabReleasesSource {
   type: 'gitlab-releases';
   // The instance's hostname, e.g. gitlab.futo.org.

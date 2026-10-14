@@ -1,6 +1,7 @@
 import { DeferredRepository } from './deferred.js';
 import { DocsService } from './docs-service.js';
 import { GitHubTokens } from './github-auth.js';
+import { GitLabTokens } from './gitlab-auth.js';
 import {
   clientTags,
   CloudflareMetricsRepository,
@@ -376,7 +377,10 @@ export function createWorker({
       // version_cron_sync_invocation is the heartbeat, whatever the run syncs.
       const metrics = new CloudflareMetricsRepository('version', [influxProvider]);
       const versionService = new VersionService(new ReleaseRepository(env.VERSION_DB), metrics);
-      const credentials = { github: new GitHubTokens(env, requestTimeoutMs) };
+      const credentials = {
+        github: new GitHubTokens(env, requestTimeoutMs),
+        gitlab: new GitLabTokens(env.GITLAB_TOKENS),
+      };
       const nightly = controller.cron === NIGHTLY_CRON;
       const run = nightly ? 'cron_full_sync' : 'cron_sync';
 

@@ -1,3 +1,4 @@
+import type { GitLabCredentials } from './gitlab-auth.js';
 import {
   confirmGone,
   RateLimitError,
@@ -18,15 +19,13 @@ const RECENT_PER_PAGE = 20;
 const HEADERS = { Accept: 'application/json', 'User-Agent': USER_AGENT };
 
 /**
- * A public GitLab project's releases, read without a token by the project's
- * id, newest first (GitLab lists them by released_at). GitLab has no drafts,
- * but it lists a release whose released_at is still to come as upcoming; those
- * are dropped until they are out.
+ * A GitLab project's releases, read by the project's id with its read token
+ * (anonymously without one, which only works for a public project), newest
+ * first (GitLab lists them by released_at). GitLab has no drafts, but it lists
+ * a release whose released_at is still to come as upcoming; those are dropped
+ * until they are out.
  */
 export class GitLabReleasesSource implements ReleaseSource {
-  // GitLab limits unauthenticated reads per instance, so every project on a
-  // host shares one limit.
-  readonly rateLimitKey: string;
   // host/path, for logs.
   private readonly project: string;
   private readonly releasesUrl: string;
@@ -36,11 +35,15 @@ export class GitLabReleasesSource implements ReleaseSource {
     // (group/name) and its id. It is read by its id, which survives renames
     // and transfers, so a project that takes up an old path is never read.
     { host, path, projectId }: { host: string; path: string; projectId: number },
+    private credentials: GitLabCredentials,
     private timeoutMs = REQUEST_TIMEOUT_MS,
   ) {
-    this.rateLimitKey = `gitlab-anonymous:${host}`;
     this.project = `${host}/${path}`;
     this.releasesUrl = `https://${host}/api/v4/projects/${projectId}/releases`;
+  }
+
+  get rateLimitKey() {
+    return this.credentials.rateLimitKey;
   }
 
   async fetchRecent({ signal }: FetchOptions = {}): Promise<ProjectRelease[]> {
@@ -79,7 +82,7 @@ export class GitLabReleasesSource implements ReleaseSource {
       candidates,
       async ({ tag }, signal) => {
         const url = `${this.releasesUrl}/${encodeURIComponent(tag)}`;
-        const response = await fetch(url, { headers: HEADERS, signal: requestSignal(this.timeoutMs, signal) });
+        const response = await this.get(url, signal);
         if (response.status === 404) {
           await response.body?.cancel();
           return true;
@@ -99,9 +102,24 @@ export class GitLabReleasesSource implements ReleaseSource {
     );
   }
 
+  /**
+   * A GET from GitLab, with the project's token if it has one. A redirect is
+   * never followed: a Worker's fetch would send the token on to wherever it
+   * points, and the API's own URLs don't redirect, so one fails as an HTTP
+   * error instead.
+   */
+  private get(url: string, signal?: AbortSignal): Promise<Response> {
+    const token = this.credentials.token();
+    return fetch(url, {
+      headers: token ? { ...HEADERS, 'PRIVATE-TOKEN': token } : HEADERS,
+      redirect: 'manual',
+      signal: requestSignal(this.timeoutMs, signal),
+    });
+  }
+
   // One page of the listing: its releases, and the response's headers.
   private async fetchPage(url: string, signal?: AbortSignal) {
-    const response = await fetch(url, { headers: HEADERS, signal: requestSignal(this.timeoutMs, signal) });
+    const response = await this.get(url, signal);
 
     if (!response.ok) {
       await response.body?.cancel();
