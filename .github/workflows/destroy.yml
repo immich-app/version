@@ -37,6 +37,7 @@ jobs:
       TF_VAR_stage: pr-${{ github.event.inputs.pr_number || github.event.number }}
       TF_VAR_dist_dir: ${{ github.workspace }}/dist
       TF_VAR_migrations_dir: ${{ github.workspace }}/migrations
+      TF_VAR_projects_file: ${{ github.workspace }}/projects.json
       OP_SERVICE_ACCOUNT_TOKEN: ${{ matrix.environment == 'prod' && secrets.OP_TF_PROD_ENV || secrets.OP_TF_DEV_ENV }}
     steps:
       - name: Checkout code

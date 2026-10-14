@@ -2,15 +2,12 @@ provider "cloudflare" {
   api_token = local.api_token
 }
 
-# Only kept so the apply that removes the old release hooks on immich-app/immich
-# (webhook.tf, now replaced by the GitHub App's webhook) can delete them. Drop
-# it, its github_app_tofu_* variables and their .env lines once dev and prod
-# have applied that.
-provider "github" {
-  app_auth {
-    id              = var.github_app_tofu_id
-    installation_id = var.github_app_tofu_installation_id
-    pem_file        = var.github_app_tofu_pem_file
-  }
-  owner = var.github_app_tofu_owner
+# gitlab.futo.org, the one GitLab host projects.json may use (gitlab.tf checks),
+# as the futo-version bot: a Maintainer of every GitLab project the service
+# reads, which creates their release hooks and read tokens. PR stages create
+# neither, and without early_auth_check they never call GitLab.
+provider "gitlab" {
+  base_url         = "https://gitlab.futo.org/api/v4/"
+  token            = var.gitlab_tofu_token
+  early_auth_check = false
 }
