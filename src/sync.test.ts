@@ -545,7 +545,7 @@ describe('scheduled, with FUTO Notes on GitLab', () => {
   // FUTO Notes as projects.json registers it, synced from its real GitLab
   // releases (src/gitlab-source.test.ts).
   const notes = requireProject('futo-notes');
-  const GITLAB = 'https://gitlab.futo.org/api/v4/projects/futo-notes%2Ffuto-notes/releases';
+  const GITLAB = 'https://gitlab.futo.org/api/v4/projects/488/releases';
   const URLS = { gitlab: GITLAB, github: 'https://api.github.com/repositories/455229168/releases' };
 
   // How each forge answers: its releases, an error status or, for GitLab, a

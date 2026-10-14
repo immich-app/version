@@ -33,7 +33,7 @@ export function createSource(
       return new GitHubReleasesSource(source, credentials.github.forRepository(source.repo), timeoutMs);
     }
     case 'gitlab-releases': {
-      return new GitLabReleasesSource(source.host, source.path, timeoutMs);
+      return new GitLabReleasesSource(source, timeoutMs);
     }
   }
 }

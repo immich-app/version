@@ -18,10 +18,10 @@ const RECENT_PER_PAGE = 20;
 const HEADERS = { Accept: 'application/json', 'User-Agent': USER_AGENT };
 
 /**
- * A public GitLab project's releases, read without a token, newest first
- * (GitLab lists them by released_at). GitLab has no drafts, but it lists a
- * release whose released_at is still to come as upcoming; those are dropped
- * until they are out.
+ * A public GitLab project's releases, read without a token by the project's
+ * id, newest first (GitLab lists them by released_at). GitLab has no drafts,
+ * but it lists a release whose released_at is still to come as upcoming; those
+ * are dropped until they are out.
  */
 export class GitLabReleasesSource implements ReleaseSource {
   // GitLab limits unauthenticated reads per instance, so every project on a
@@ -32,16 +32,15 @@ export class GitLabReleasesSource implements ReleaseSource {
   private readonly releasesUrl: string;
 
   constructor(
-    // The instance's hostname, e.g. gitlab.futo.org.
-    host: string,
-    // The project's full path, group/name.
-    path: string,
+    // The instance's hostname (gitlab.futo.org), the project's full path
+    // (group/name) and its id. It is read by its id, which survives renames
+    // and transfers, so a project that takes up an old path is never read.
+    { host, path, projectId }: { host: string; path: string; projectId: number },
     private timeoutMs = REQUEST_TIMEOUT_MS,
   ) {
     this.rateLimitKey = `gitlab-anonymous:${host}`;
     this.project = `${host}/${path}`;
-    // The API takes the path as one segment, its slashes encoded.
-    this.releasesUrl = `https://${host}/api/v4/projects/${encodeURIComponent(path)}/releases`;
+    this.releasesUrl = `https://${host}/api/v4/projects/${projectId}/releases`;
   }
 
   async fetchRecent({ signal }: FetchOptions = {}): Promise<ProjectRelease[]> {

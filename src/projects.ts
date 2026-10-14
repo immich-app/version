@@ -36,8 +36,12 @@ export interface GitLabReleasesSource {
   type: 'gitlab-releases';
   // The instance's hostname, e.g. gitlab.futo.org.
   host: string;
-  // The project's full path: group/name, with any subgroups between.
+  // The project's full path: group/name, with any subgroups between. For logs
+  // and docs: the project is read and routed by its id.
   path: string;
+  // GitLab's project id, which survives renames and transfers. It is unique
+  // only on its instance.
+  projectId: number;
 }
 
 // One member per source type, told apart by `type`.
@@ -108,10 +112,9 @@ export const findProject = (id: string, list: readonly Project[] = projects) =>
   list.find((project) => project.id === id);
 
 /**
- * Identifies a source: a GitHub repository by its id, which survives renames
- * and transfers, and a GitLab project by its host and path, ignoring the
- * path's case as GitLab does. Projects with the same key read the same
- * releases, each keeping only the tags its pattern matches.
+ * Identifies a source: a GitHub repository by its id and a GitLab project by
+ * its host and id, which survive renames and transfers. Projects with the same
+ * key read the same releases, each keeping only the tags its pattern matches.
  */
 export function sourceKey(source: ProjectSource): string {
   switch (source.type) {
@@ -119,7 +122,7 @@ export function sourceKey(source: ProjectSource): string {
       return `${source.type}:${source.repoId}`;
     }
     case 'gitlab-releases': {
-      return `${source.type}:${source.host}/${source.path.toLowerCase()}`;
+      return `${source.type}:${source.host}:${source.projectId}`;
     }
   }
 }
@@ -147,6 +150,27 @@ export function projectsForGitHubRepository(repository: unknown, list: readonly 
   const matched = new Set(
     list
       .filter(({ source }) => source.type === 'github-releases' && matches(source))
+      .map(({ source }) => sourceKey(source)),
+  );
+  return list.filter(({ source }) => matched.has(sourceKey(source)));
+}
+
+/**
+ * The projects whose releases come from the GitLab project a webhook names:
+ * the one with that numeric id on that host, since ids are permanent but only
+ * unique on their instance. A match takes every project on that source
+ * (sameSource()).
+ */
+export function projectsForGitLabProject(
+  host: string,
+  projectId: unknown,
+  list: readonly Project[] = projects,
+): Project[] {
+  const matched = new Set(
+    list
+      .filter(
+        ({ source }) => source.type === 'gitlab-releases' && source.host === host && source.projectId === projectId,
+      )
       .map(({ source }) => sourceKey(source)),
   );
   return list.filter(({ source }) => matched.has(sourceKey(source)));
@@ -238,6 +262,15 @@ class Problems {
     }
     return value;
   }
+
+  // A forge's numeric id for a repository or project.
+  id(path: string, value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      this.add(path, 'must be a positive integer');
+      return undefined;
+    }
+    return value;
+  }
 }
 
 function loadProject(problems: Problems, path: string, value: unknown): Project | undefined {
@@ -288,21 +321,20 @@ const sourceLoaders: SourceLoaders = {
       return;
     }
     const repo = problems.string(`${path}.repo`, source.repo, GITHUB_REPO_PATTERN);
-    const { repoId } = source;
-    if (typeof repoId !== 'number' || !Number.isSafeInteger(repoId) || repoId <= 0) {
-      problems.add(`${path}.repoId`, 'must be a positive integer');
-      return;
-    }
-    return repo ? { type: 'github-releases', repo, repoId } : undefined;
+    const repoId = problems.id(`${path}.repoId`, source.repoId);
+    return repo && repoId ? { type: 'github-releases', repo, repoId } : undefined;
   },
   'gitlab-releases'(problems, path, value) {
-    const source = problems.object(path, value, ['type', 'host', 'path']);
+    const source = problems.object(path, value, ['type', 'host', 'path', 'projectId']);
     if (!source) {
       return;
     }
     const host = problems.string(`${path}.host`, source.host, GITLAB_HOST_PATTERN);
     const projectPath = problems.string(`${path}.path`, source.path, GITLAB_PATH_PATTERN);
-    return host && projectPath ? { type: 'gitlab-releases', host, path: projectPath } : undefined;
+    const projectId = problems.id(`${path}.projectId`, source.projectId);
+    return host && projectPath && projectId
+      ? { type: 'gitlab-releases', host, path: projectPath, projectId }
+      : undefined;
   },
 };
 
