@@ -18,6 +18,8 @@ declare namespace Cloudflare {
     GITHUB_APP_ID?: string;
     GITHUB_APP_PRIVATE_KEY?: string;
     GITHUB_WEBHOOK_SECRET?: string;
+    // JSON: "host/projectId" -> that GitLab project's read token.
+    GITLAB_TOKENS?: string;
   }
 }
 interface Env extends Cloudflare.Env {}

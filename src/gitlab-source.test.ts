@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { GitLabTokens } from './gitlab-auth.js';
 import { GitLabReleasesSource } from './gitlab-source.js';
-import { RateLimitError, SourceHttpError } from './sources.js';
+import { RateLimitError, SourceAuthError, SourceHttpError } from './sources.js';
 import futoNotes from './test/fixtures/gitlab-futo-notes-releases.json';
 import { gitlabReleasesPage } from './test/helpers.js';
 
@@ -10,7 +11,8 @@ import { gitlabReleasesPage } from './test/helpers.js';
 const RELEASES = 'https://gitlab.futo.org/api/v4/projects/488/releases';
 
 const NOTES = { host: 'gitlab.futo.org', path: 'futo-notes/futo-notes', projectId: 488 };
-const source = (timeoutMs?: number) => new GitLabReleasesSource(NOTES, timeoutMs);
+const anonymous = new GitLabTokens(undefined);
+const source = (timeoutMs?: number) => new GitLabReleasesSource(NOTES, anonymous.forProject(NOTES), timeoutMs);
 
 // A listing of `count` releases, newest first.
 const listing = (count: number) =>
@@ -160,22 +162,70 @@ describe('GitLabReleasesSource', () => {
       return Promise.resolve(Response.json([]));
     });
 
-    await new GitLabReleasesSource({
-      host: 'gitlab.example.org',
-      path: 'group/sub.group/name',
-      projectId: 7,
-    }).fetchRecent();
+    const project = { host: 'gitlab.example.org', path: 'group/sub.group/name', projectId: 7 };
+    await new GitLabReleasesSource(project, anonymous.forProject(project)).fetchRecent();
 
     expect(requests).toEqual(['https://gitlab.example.org/api/v4/projects/7/releases?per_page=20']);
   });
 
-  it('shares a rate limit with every project on its host, and with no other', () => {
-    const other = new GitLabReleasesSource({ host: 'gitlab.futo.org', path: 'futo-org/other', projectId: 9 });
-    const elsewhere = new GitLabReleasesSource({ ...NOTES, host: 'gitlab.example.org' });
+  it("reads with the project's token, listing and asking for one release alike", async () => {
+    const tokens = new GitLabTokens(JSON.stringify({ 'gitlab.futo.org/488': 'glpat-notes' }));
+    const [newest] = futoNotes;
+    const requests: Request[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return Promise.resolve(
+        request.url.startsWith(`${RELEASES}?`) ? gitlabReleasesPage(request.url, futoNotes) : Response.json(newest),
+      );
+    });
+    const tokened = new GitLabReleasesSource(NOTES, tokens.forProject(NOTES));
 
-    expect(source().rateLimitKey).toBe('gitlab-anonymous:gitlab.futo.org');
-    expect(other.rateLimitKey).toBe(source().rateLimitKey);
-    expect(elsewhere.rateLimitKey).not.toBe(source().rateLimitKey);
+    await tokened.fetchRecent();
+    await tokened.confirmRetracted([
+      { tag: newest.tag_name, published_at: newest.released_at, source_id: newest.tag_name, forge_prerelease: null },
+    ]);
+
+    expect(requests).toHaveLength(2);
+    expect(requests.map(({ headers }) => headers.get('PRIVATE-TOKEN'))).toEqual(['glpat-notes', 'glpat-notes']);
+    expect(tokened.rateLimitKey).toBe('gitlab:gitlab.futo.org:488');
+  });
+
+  it('never follows a redirect, so the token stays with GitLab', async () => {
+    const tokens = new GitLabTokens(JSON.stringify({ 'gitlab.futo.org/488': 'glpat-notes' }));
+    const requests: Request[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      requests.push(new Request(input, init));
+      return Promise.resolve(new Response(null, { status: 302, headers: { Location: 'https://elsewhere.example/' } }));
+    });
+    const tokened = new GitLabReleasesSource(NOTES, tokens.forProject(NOTES));
+    const [newest] = futoNotes;
+
+    await expect(tokened.fetchRecent()).rejects.toMatchObject({ status: 302 });
+    // A release GitLab can't be asked about stays.
+    await expect(
+      tokened.confirmRetracted([
+        { tag: newest.tag_name, published_at: newest.released_at, source_id: newest.tag_name, forge_prerelease: null },
+      ]),
+    ).resolves.toEqual([]);
+    expect(requests.map(({ redirect }) => redirect)).toEqual(['manual', 'manual']);
+  });
+
+  it('sends no token without one', async () => {
+    const requests = mockGitLab(futoNotes);
+
+    await source().fetchRecent();
+
+    expect(requests[0].headers.get('PRIVATE-TOKEN')).toBeNull();
+    expect(requests[0].headers.get('Authorization')).toBeNull();
+  });
+
+  it('fails as auth, before any request, when the tokens binding is malformed', async () => {
+    const requests = mockGitLab(futoNotes);
+    const broken = new GitLabReleasesSource(NOTES, new GitLabTokens('not json').forProject(NOTES));
+
+    await expect(broken.fetchRecent()).rejects.toBeInstanceOf(SourceAuthError);
+    expect(requests).toEqual([]);
   });
 
   it.each([
